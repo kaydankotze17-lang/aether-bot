@@ -15,6 +15,10 @@ const isProduction =
   process.env.NODE_ENV === "production" ||
   process.env.RENDER === "true";
 
+/* =========================
+   DATABASE
+========================= */
+
 const pool = process.env.DATABASE_URL
   ? new pg.Pool({
       connectionString: process.env.DATABASE_URL,
@@ -61,7 +65,7 @@ app.use(
 );
 
 /* =========================
-   DATABASE
+   DATABASE HELPERS
 ========================= */
 
 async function db(sql, params = []) {
@@ -246,7 +250,7 @@ async function guildAuth(req, res, next) {
 }
 
 /* =========================
-   OAUTH
+   OAUTH URL
 ========================= */
 
 function oauth() {
@@ -569,6 +573,31 @@ app.post(
         });
       }
     );
+  }
+);
+
+/* =========================
+   PUBLIC CONFIG
+========================= */
+
+/*
+  This endpoint only exposes the Discord
+  application Client ID.
+
+  Client IDs are public identifiers.
+  Secrets and the bot token NEVER leave
+  the server.
+*/
+
+app.get(
+  "/api/public-config",
+  (_, res) => {
+    res.json({
+      clientId:
+        process.env.DISCORD_CLIENT_ID ||
+        process.env.DISCORD_OAUTH_CLIENT_ID ||
+        null
+    });
   }
 );
 
@@ -985,6 +1014,10 @@ app.use(
     )
   )
 );
+
+/* =========================
+   ROOT
+========================= */
 
 app.get(
   "/",
