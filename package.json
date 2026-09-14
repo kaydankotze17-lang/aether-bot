@@ -1,25 +1,9 @@
 {
-  "name": "aether-discord-music-bot",
-  "version": "1.2.0",
-  "private": true,
-  "description": "Deploy-ready Discord music bot with multi-source failover, favorites, lyrics and a polished Aether music player UI.",
-  "type": "module",
-  "main": "src/index.js",
-  "engines": {
-    "node": ">=22.12.0"
-  },
-  "scripts": {
-    "start": "node src/index.js",
-    "register": "node src/registerCommands.js"
-  },
-  "dependencies": {
-    "@discordjs/voice": "^0.19.2",
-    "@snazzah/davey": "^0.1.12",
-    "discord.js": "^14.27.0",
-    "dotenv": "^17.4.2",
-    "ffmpeg-static": "^5.3.0",
-    "opusscript": "^0.1.1",
-    "@iamtraction/play-dl": "^2.0.1",
-    "youtubei.js": "^18.0.0"
-  }
+  "name":"aether-discord-dashboard-full",
+  "version":"2.0.0",
+  "private":true,
+  "type":"module",
+  "engines":{"node":">=22.12.0"},
+  "scripts":{"start":"node server.js"},
+  "dependencies":{"connect-pg-simple":"^10.0.0","express":"^5.1.0","express-session":"^1.18.2","pg":"^8.16.3"}
 }
