@@ -1,1 +1,415 @@
-<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Aether Dashboard</title><link rel="stylesheet" href="/styles.css"></head><body><nav><b>AETHER</b><a href="/auth/discord">Login with Discord</a></nav><main class="hero"><small>DISCORD MUSIC CONTROL CENTER</small><h1>Control Aether.<br><span>Server by server.</span></h1><p>Sign in with Discord to manage only the servers where you have permission.</p><a class="primary" href="/auth/discord">Continue with Discord</a></main></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#08080c">
+  <title>Aether Control Center</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+
+<body>
+<div class="app">
+
+  <div id="mobileOverlay" class="mobile-overlay"></div>
+
+  <aside id="sidebar">
+    <div class="brand">
+      <div class="brand-mark">A</div>
+      <div>
+        <b>AETHER</b>
+        <span>CONTROL CENTER</span>
+      </div>
+    </div>
+
+    <div class="server-picker">
+      <label for="guild">SERVER</label>
+      <select id="guild"></select>
+    </div>
+
+    <nav class="nav">
+      <button data-tab="overview" class="active">
+        <span>Overview</span>
+      </button>
+      <button data-tab="music">
+        <span>Music</span>
+      </button>
+      <button data-tab="player">
+        <span>Player</span>
+      </button>
+      <button data-tab="embeds">
+        <span>Embeds</span>
+      </button>
+      <button data-tab="permissions">
+        <span>Permissions</span>
+      </button>
+      <button data-tab="analytics">
+        <span>Analytics</span>
+      </button>
+      <button data-tab="audit">
+        <span>Audit log</span>
+      </button>
+    </nav>
+
+    <div class="sidebar-bottom">
+      <a href="/privacy.html">Privacy</a>
+      <a href="/terms.html">Terms</a>
+      <button id="invite" class="invite-btn">Invite Aether</button>
+      <button id="logout" class="logout">Log out</button>
+    </div>
+  </aside>
+
+  <main>
+
+    <header class="topbar">
+      <button id="menuButton" class="menu-button" aria-label="Open menu">
+        <span></span><span></span><span></span>
+      </button>
+
+      <div class="page-title">
+        <small>AETHER CONTROL CENTER</small>
+        <h1 id="name">Loading...</h1>
+      </div>
+
+      <div id="status" class="status">Checking...</div>
+    </header>
+
+    <div id="commandToast" class="toast"></div>
+
+    <section id="overview" class="tab active">
+
+      <div class="section-heading">
+        <div>
+          <small>OVERVIEW</small>
+          <h2>Server control</h2>
+        </div>
+        <span class="section-hint">Manage your music bot</span>
+      </div>
+
+      <div class="cards">
+        <article class="stat-card">
+          <span class="stat-label">BOT STATUS</span>
+          <strong id="bot">—</strong>
+          <small id="botSub">Checking installation</small>
+        </article>
+
+        <article class="stat-card">
+          <span class="stat-label">VOICE</span>
+          <strong id="connection">—</strong>
+          <small>Current connection</small>
+        </article>
+
+        <article class="stat-card">
+          <span class="stat-label">QUEUE</span>
+          <strong id="queueCount">0</strong>
+          <small>Tracks waiting</small>
+        </article>
+      </div>
+
+      <div class="panel hero-panel">
+        <div>
+          <span class="eyebrow">PLAYER CONTROL</span>
+          <h3>Control Aether remotely.</h3>
+          <p>
+            Run player commands for the selected Discord server without
+            needing to open Discord.
+          </p>
+        </div>
+
+        <div class="controls large-controls">
+          <button data-command="join">Join</button>
+          <button data-command="pause">Pause</button>
+          <button data-command="resume">Resume</button>
+          <button data-command="skip">Skip</button>
+          <button data-command="stop">Stop</button>
+          <button data-command="shuffle">Shuffle</button>
+          <button data-command="disconnect">Disconnect</button>
+        </div>
+      </div>
+
+    </section>
+
+    <section id="music" class="tab">
+
+      <div class="section-heading">
+        <div>
+          <small>MUSIC</small>
+          <h2>Playback settings</h2>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="grid">
+          <label>
+            Default volume
+            <input id="volume" type="number" min="0" max="100">
+          </label>
+
+          <label>
+            Maximum queue
+            <input id="maxQueue" type="number" min="1" max="1000">
+          </label>
+
+          <label>
+            Repeat mode
+            <select id="repeat">
+              <option value="off">Off</option>
+              <option value="track">Track</option>
+              <option value="queue">Queue</option>
+            </select>
+          </label>
+
+          <label>
+            Default search source
+            <select id="defaultSearchSource">
+              <option value="youtube">YouTube</option>
+              <option value="soundcloud">SoundCloud</option>
+              <option value="spotify">Spotify</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="setting-list">
+          <label class="toggle-row">
+            <span>
+              <b>Autoplay</b>
+              <small>Automatically continue with another track.</small>
+            </span>
+            <input id="autoplay" type="checkbox">
+          </label>
+
+          <label class="toggle-row">
+            <span>
+              <b>24/7 voice</b>
+              <small>Keep the bot connected to the voice channel.</small>
+            </span>
+            <input id="twentyFourSeven" type="checkbox">
+          </label>
+
+          <label class="toggle-row">
+            <span>
+              <b>Allow playlists</b>
+              <small>Allow playlist URLs and playlist searches.</small>
+            </span>
+            <input id="allowPlaylists" type="checkbox">
+          </label>
+
+          <label class="toggle-row">
+            <span>
+              <b>Allow search</b>
+              <small>Allow users to search instead of supplying URLs.</small>
+            </span>
+            <input id="allowSearch" type="checkbox">
+          </label>
+        </div>
+
+        <h3 class="subheading">Supported sources</h3>
+        <div id="sources" class="checks"></div>
+      </div>
+
+    </section>
+
+    <section id="player" class="tab">
+
+      <div class="section-heading">
+        <div>
+          <small>PLAYER</small>
+          <h2>Live player</h2>
+        </div>
+      </div>
+
+      <div class="panel now-playing">
+        <span class="eyebrow">NOW PLAYING</span>
+        <div id="track" class="track-title">Nothing playing</div>
+        <div class="player-line">
+          <span id="connectionPlayer">Idle</span>
+          <span>•</span>
+          <span id="playerQueueCount">0 tracks queued</span>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">
+          <div>
+            <h3>Queue</h3>
+            <p>Upcoming tracks.</p>
+          </div>
+        </div>
+
+        <div id="playerQueue" class="queue"></div>
+
+        <div class="controls">
+          <button data-command="previous">Previous</button>
+          <button data-command="pause">Pause</button>
+          <button data-command="resume">Resume</button>
+          <button data-command="skip">Skip</button>
+          <button data-command="clear">Clear queue</button>
+        </div>
+      </div>
+
+    </section>
+
+    <section id="embeds" class="tab">
+
+      <div class="section-heading">
+        <div>
+          <small>EMBEDS</small>
+          <h2>Discord appearance</h2>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="grid">
+          <label>
+            Embed color
+            <input id="embedColor" type="color">
+          </label>
+
+          <label>
+            Now playing title
+            <input id="nowPlayingTitle" type="text" placeholder="Now playing">
+          </label>
+
+          <label>
+            Footer
+            <input id="footerText" type="text" placeholder="Aether Music">
+          </label>
+        </div>
+
+        <div class="setting-list">
+          <label class="toggle-row">
+            <span>
+              <b>Announce now playing</b>
+              <small>Send a message when a new track starts.</small>
+            </span>
+            <input id="announceNowPlaying" type="checkbox">
+          </label>
+
+          <label class="toggle-row">
+            <span>
+              <b>Show requester</b>
+              <small>Display who requested the track.</small>
+            </span>
+            <input id="requesterDisplay" type="checkbox">
+          </label>
+
+          <label class="toggle-row">
+            <span>
+              <b>Show queue buttons</b>
+              <small>Add player controls to music messages.</small>
+            </span>
+            <input id="showQueueButtons" type="checkbox">
+          </label>
+        </div>
+      </div>
+
+    </section>
+
+    <section id="permissions" class="tab">
+
+      <div class="section-heading">
+        <div>
+          <small>PERMISSIONS</small>
+          <h2>Roles & channels</h2>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="grid">
+          <label>
+            DJ role
+            <select id="djRoleId">
+              <option value="">No DJ role</option>
+            </select>
+          </label>
+
+          <label>
+            Music channel
+            <select id="musicChannelId">
+              <option value="">Any channel</option>
+            </select>
+          </label>
+
+          <label>
+            Log channel
+            <select id="logChannelId">
+              <option value="">No log channel</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="setting-list">
+          <label class="toggle-row">
+            <span>
+              <b>Require DJ role</b>
+              <small>Require the selected role for player controls.</small>
+            </span>
+            <input id="minDjRole" type="checkbox">
+          </label>
+
+          <label class="toggle-row">
+            <span>
+              <b>Log commands</b>
+              <small>Record music commands in the audit system.</small>
+            </span>
+            <input id="logCommands" type="checkbox">
+          </label>
+
+          <label class="toggle-row">
+            <span>
+              <b>Log player events</b>
+              <small>Record joins, skips and player events.</small>
+            </span>
+            <input id="logPlayer" type="checkbox">
+          </label>
+        </div>
+      </div>
+
+    </section>
+
+    <section id="analytics" class="tab">
+
+      <div class="section-heading">
+        <div>
+          <small>ANALYTICS</small>
+          <h2>Server activity</h2>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div id="analyticsBox" class="data-list">Loading...</div>
+      </div>
+
+    </section>
+
+    <section id="audit" class="tab">
+
+      <div class="section-heading">
+        <div>
+          <small>AUDIT LOG</small>
+          <h2>Recent changes</h2>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div id="auditBox" class="data-list">Loading...</div>
+      </div>
+
+    </section>
+
+    <footer class="savebar">
+      <div>
+        <span id="msg" class="save-message hidden"></span>
+      </div>
+
+      <button id="save" class="primary save-button">
+        <span id="saveText">Save changes</span>
+      </button>
+    </footer>
+
+  </main>
+</div>
+
+<script src="/dashboard.js"></script>
+</body>
+</html>
