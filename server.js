@@ -7,30 +7,765 @@ import crypto from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const __dirname=path.dirname(fileURLToPath(import.meta.url));
-const app=express(); const PORT=Number(process.env.PORT||3000);
-const pool=process.env.DATABASE_URL?new pg.Pool({connectionString:process.env.DATABASE_URL,ssl:process.env.NODE_ENV==='production'?{rejectUnauthorized:false}:false}):null;
-app.set('trust proxy',1); app.use(express.json({limit:'100kb'}));
-const Store=pgSession(session);
-app.use(session({store:pool?new Store({pool,createTableIfMissing:true}):undefined,secret:process.env.SESSION_SECRET||crypto.randomBytes(32).toString('hex'),resave:false,saveUninitialized:false,cookie:{httpOnly:true,secure:process.env.NODE_ENV==='production',sameSite:'lax',maxAge:7*86400000}}));
-async function db(sql,p=[]){if(!pool)throw new Error('DATABASE_URL is required for persistent dashboard data');return pool.query(sql,p)}
-async function discord(path,opts={}){const r=await fetch('https://discord.com/api/v10'+path,{...opts,headers:{'User-Agent':'AetherDashboard/2.0','Content-Type':'application/json',...(opts.headers||{})}});const t=await r.text();let d;try{d=JSON.parse(t)}catch{d=t}if(!r.ok){const e=new Error('Discord API '+r.status);e.status=r.status;e.data=d;throw e}return d}
-function manageable(g){const p=BigInt(g.permissions||'0');return !!g.owner||!!(p&(1n<<3n))||!!(p&(1n<<5n))}
-function auth(req,res,next){if(!req.session.user)return res.status(401).json({error:'Not authenticated'});next()}
-async function guildAuth(req,res,next){if(!req.session.user)return res.status(401).json({error:'Not authenticated'});const id=String(req.params.guildId);const g=(req.session.guilds||[]).find(x=>x.id===id);if(!g||!manageable(g))return res.status(403).json({error:'You cannot manage this server.'});req.guild=g;next()}
-function oauth(){return 'https://discord.com/oauth2/authorize?'+new URLSearchParams({client_id:process.env.DISCORD_OAUTH_CLIENT_ID||process.env.DISCORD_CLIENT_ID||'',redirect_uri:process.env.DISCORD_OAUTH_REDIRECT_URI||'',response_type:'code',scope:'identify guilds'}).toString()}
-async function botGuilds(){if(!process.env.DISCORD_TOKEN)return[];try{return await discord('/users/@me/guilds',{headers:{Authorization:'Bot '+process.env.DISCORD_TOKEN}})}catch{return[]}}
-const defaults={volume:80,maxQueue:100,autoplay:false,twentyFourSeven:false,repeat:'off',djRoleId:'',musicChannelId:'',logChannelId:'',embedColor:'#8b5cf6',nowPlayingTitle:'Now Playing',footerText:'Aether Music',language:'en',announceNowPlaying:true,deleteCommands:false,allowExternalLinks:true,sourceYouTube:true,sourceSoundCloud:true,sourceSpotify:true,sourceAppleMusic:true,sourceDeezer:true,sourceBandcamp:true,sourceTwitch:true,sourceVimeo:true,sourceRadio:true,sourceDirectUrl:true,requesterDisplay:true,showQueueButtons:true,allowPlaylists:true,allowSearch:true,defaultSearchSource:'youtube',minDjRole:false,logCommands:true,logPlayer:true,logJoins:true,enableAnalytics:true};
-app.get('/auth/discord',(_,res)=>res.redirect(oauth()));
-app.get('/auth/discord/callback',async(req,res)=>{try{if(!req.query.code)return res.status(400).send('Missing OAuth code.');const body=new URLSearchParams({client_id:process.env.DISCORD_OAUTH_CLIENT_ID||process.env.DISCORD_CLIENT_ID||'',client_secret:process.env.DISCORD_OAUTH_CLIENT_SECRET||'',grant_type:'authorization_code',code:String(req.query.code),redirect_uri:process.env.DISCORD_OAUTH_REDIRECT_URI||''});const tr=await fetch('https://discord.com/api/v10/oauth2/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body});if(!tr.ok)throw Error('OAuth exchange failed');const tok=await tr.json();const [u,g]=await Promise.all([discord('/users/@me',{headers:{Authorization:'Bearer '+tok.access_token}}),discord('/users/@me/guilds',{headers:{Authorization:'Bearer '+tok.access_token}})]);req.session.user={id:u.id,username:u.global_name||u.username,avatar:u.avatar||null};req.session.guilds=g.filter(manageable);res.redirect('/dashboard.html')}catch(e){console.error(e);res.status(500).send('Discord login failed. Check OAuth variables and redirect URI.')}});
-app.post('/auth/logout',(req,res)=>req.session.destroy(()=>res.json({ok:true})));
-app.get('/api/me',auth,async(req,res)=>{const bg=await botGuilds(),bs=new Set(bg.map(x=>x.id));res.json({user:req.session.user,guilds:(req.session.guilds||[]).map(g=>({...g,botInstalled:bs.has(g.id)}))})});
-app.get('/api/guilds/:guildId/meta',guildAuth,async(req,res)=>{const id=req.guild.id;const bg=await botGuilds();const installed=bg.some(g=>g.id===id);let roles=[],channels=[];if(installed&&process.env.DISCORD_TOKEN){try{[roles,channels]=await Promise.all([discord(`/guilds/${id}/roles`,{headers:{Authorization:`Bot ${process.env.DISCORD_TOKEN}`}}),discord(`/guilds/${id}/channels`,{headers:{Authorization:`Bot ${process.env.DISCORD_TOKEN}`}})])}catch{}}res.json({guild:req.guild,installed,roles:roles.filter(r=>!r.managed),channels:channels.filter(c=>c.type===0||c.type===2)})});
-app.get('/api/guilds/:guildId/settings',guildAuth,async(req,res)=>{const r=await db('SELECT config FROM guild_settings WHERE guild_id=$1',[req.guild.id]);res.json({...defaults,...(r.rows[0]?.config||{})})});
-app.put('/api/guilds/:guildId/settings',guildAuth,async(req,res)=>{const c={};for(const k of Object.keys(defaults))if(req.body[k]!==undefined)c[k]=req.body[k];await db(`INSERT INTO guild_settings(guild_id,guild_name,config) VALUES($1,$2,$3) ON CONFLICT(guild_id) DO UPDATE SET guild_name=EXCLUDED.guild_name,config=EXCLUDED.config,updated_at=NOW()`,[req.guild.id,req.guild.name,c]);await db('INSERT INTO audit_log(guild_id,user_id,action,payload) VALUES($1,$2,$3,$4)',[req.guild.id,req.session.user.id,'settings.update',c]);res.json({ok:true,settings:{...defaults,...c}})});
-app.get('/api/guilds/:guildId/player',guildAuth,async(req,res)=>{const r=await db('SELECT state FROM player_state WHERE guild_id=$1',[req.guild.id]);res.json(r.rows[0]?.state||{connected:false,playing:false,track:null,queue:[],volume:80,repeat:'off'})});
-app.post('/api/guilds/:guildId/player/:command',guildAuth,async(req,res)=>{const allowed=['join','play','pause','resume','skip','stop','shuffle','previous','disconnect','volume','repeat','clear'];if(!allowed.includes(req.params.command))return res.status(400).json({error:'Unknown player command'});const payload=req.body||{};await db('INSERT INTO bot_commands(guild_id,command,payload) VALUES($1,$2,$3)',[req.guild.id,req.params.command,payload]);await db('INSERT INTO audit_log(guild_id,user_id,action,payload) VALUES($1,$2,$3,$4)',[req.guild.id,req.session.user.id,'player.'+req.params.command,payload]);res.json({ok:true,queued:true})});
-app.get('/api/guilds/:guildId/analytics',guildAuth,async(req,res)=>{const days=Math.min(90,Math.max(1,Number(req.query.days||30)));const r=await db(`SELECT event_type,COUNT(*)::int count FROM analytics_events WHERE guild_id=$1 AND created_at>NOW()-($2||' days')::interval GROUP BY event_type ORDER BY count DESC`,[req.guild.id,String(days)]);res.json({days,events:r.rows})});
-app.get('/api/guilds/:guildId/audit',guildAuth,async(req,res)=>{const r=await db('SELECT user_id,action,payload,created_at FROM audit_log WHERE guild_id=$1 ORDER BY id DESC LIMIT 100',[req.guild.id]);res.json(r.rows)});
-app.use(express.static(path.join(__dirname,'public')));app.get('/',(_,res)=>res.sendFile(path.join(__dirname,'public','index.html')));
-app.listen(PORT,()=>console.log('Aether Dashboard 2.0 listening on '+PORT));
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const app = express();
+const PORT = Number(process.env.PORT || 3000);
+
+const isProduction =
+  process.env.NODE_ENV === "production" ||
+  process.env.RENDER === "true";
+
+const pool = process.env.DATABASE_URL
+  ? new pg.Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl: isProduction
+        ? { rejectUnauthorized: false }
+        : false
+    })
+  : null;
+
+// Render runs behind a reverse proxy.
+app.set("trust proxy", 1);
+
+app.use(express.json({ limit: "100kb" }));
+
+const Store = pgSession(session);
+
+app.use(
+  session({
+    store: pool
+      ? new Store({
+          pool,
+          createTableIfMissing: true
+        })
+      : undefined,
+
+    secret:
+      process.env.SESSION_SECRET ||
+      crypto.randomBytes(32).toString("hex"),
+
+    resave: false,
+    saveUninitialized: false,
+
+    proxy: true,
+
+    cookie: {
+      httpOnly: true,
+      secure: isProduction,
+      sameSite: "lax",
+      maxAge: 7 * 86400000
+    }
+  })
+);
+
+async function db(sql, p = []) {
+  if (!pool) {
+    throw new Error(
+      "DATABASE_URL is required for persistent dashboard data"
+    );
+  }
+
+  return pool.query(sql, p);
+}
+
+async function discord(pathname, opts = {}) {
+  const r = await fetch(
+    "https://discord.com/api/v10" + pathname,
+    {
+      ...opts,
+      headers: {
+        "User-Agent": "AetherDashboard/2.0",
+        "Content-Type": "application/json",
+        ...(opts.headers || {})
+      }
+    }
+  );
+
+  const text = await r.text();
+
+  let data;
+
+  try {
+    data = JSON.parse(text);
+  } catch {
+    data = text;
+  }
+
+  if (!r.ok) {
+    const error = new Error("Discord API " + r.status);
+    error.status = r.status;
+    error.data = data;
+    throw error;
+  }
+
+  return data;
+}
+
+function manageable(guild) {
+  const permissions = BigInt(guild.permissions || "0");
+
+  return (
+    !!guild.owner ||
+    !!(permissions & (1n << 3n)) ||
+    !!(permissions & (1n << 5n))
+  );
+}
+
+function auth(req, res, next) {
+  if (!req.session.user) {
+    return res.status(401).json({
+      error: "Not authenticated"
+    });
+  }
+
+  next();
+}
+
+async function guildAuth(req, res, next) {
+  if (!req.session.user) {
+    return res.status(401).json({
+      error: "Not authenticated"
+    });
+  }
+
+  const id = String(req.params.guildId);
+
+  const guild = (req.session.guilds || []).find(
+    guild => guild.id === id
+  );
+
+  if (!guild || !manageable(guild)) {
+    return res.status(403).json({
+      error: "You cannot manage this server."
+    });
+  }
+
+  req.guild = guild;
+  next();
+}
+
+function oauth() {
+  return (
+    "https://discord.com/oauth2/authorize?" +
+    new URLSearchParams({
+      client_id:
+        process.env.DISCORD_OAUTH_CLIENT_ID ||
+        process.env.DISCORD_CLIENT_ID ||
+        "",
+
+      redirect_uri:
+        process.env.DISCORD_OAUTH_REDIRECT_URI || "",
+
+      response_type: "code",
+      scope: "identify guilds"
+    }).toString()
+  );
+}
+
+async function botGuilds() {
+  if (!process.env.DISCORD_TOKEN) {
+    return [];
+  }
+
+  try {
+    return await discord("/users/@me/guilds", {
+      headers: {
+        Authorization: "Bot " + process.env.DISCORD_TOKEN
+      }
+    });
+  } catch {
+    return [];
+  }
+}
+
+const defaults = {
+  volume: 80,
+  maxQueue: 100,
+  autoplay: false,
+  twentyFourSeven: false,
+  repeat: "off",
+  djRoleId: "",
+  musicChannelId: "",
+  logChannelId: "",
+  embedColor: "#8b5cf6",
+  nowPlayingTitle: "Now Playing",
+  footerText: "Aether Music",
+  language: "en",
+  announceNowPlaying: true,
+  deleteCommands: false,
+  allowExternalLinks: true,
+  sourceYouTube: true,
+  sourceSoundCloud: true,
+  sourceSpotify: true,
+  sourceAppleMusic: true,
+  sourceDeezer: true,
+  sourceBandcamp: true,
+  sourceTwitch: true,
+  sourceVimeo: true,
+  sourceRadio: true,
+  sourceDirectUrl: true,
+  requesterDisplay: true,
+  showQueueButtons: true,
+  allowPlaylists: true,
+  allowSearch: true,
+  defaultSearchSource: "youtube",
+  minDjRole: false,
+  logCommands: true,
+  logPlayer: true,
+  logJoins: true,
+  enableAnalytics: true
+};
+
+/* =========================
+   AUTH
+========================= */
+
+app.get("/auth/discord", (_, res) => {
+  res.redirect(oauth());
+});
+
+app.get(
+  "/auth/discord/callback",
+  async (req, res) => {
+    try {
+      if (!req.query.code) {
+        return res.status(400).send(
+          "Missing OAuth code."
+        );
+      }
+
+      const body = new URLSearchParams({
+        client_id:
+          process.env.DISCORD_OAUTH_CLIENT_ID ||
+          process.env.DISCORD_CLIENT_ID ||
+          "",
+
+        client_secret:
+          process.env.DISCORD_OAUTH_CLIENT_SECRET || "",
+
+        grant_type: "authorization_code",
+
+        code: String(req.query.code),
+
+        redirect_uri:
+          process.env.DISCORD_OAUTH_REDIRECT_URI || ""
+      });
+
+      const tokenResponse = await fetch(
+        "https://discord.com/api/v10/oauth2/token",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type":
+              "application/x-www-form-urlencoded"
+          },
+          body
+        }
+      );
+
+      if (!tokenResponse.ok) {
+        const errorText =
+          await tokenResponse.text();
+
+        console.error(
+          "Discord OAuth token exchange failed:",
+          errorText
+        );
+
+        throw new Error(
+          "OAuth exchange failed"
+        );
+      }
+
+      const token = await tokenResponse.json();
+
+      if (!token.access_token) {
+        throw new Error(
+          "Discord did not return an access token"
+        );
+      }
+
+      const [user, guilds] = await Promise.all([
+        discord("/users/@me", {
+          headers: {
+            Authorization:
+              "Bearer " + token.access_token
+          }
+        }),
+
+        discord("/users/@me/guilds", {
+          headers: {
+            Authorization:
+              "Bearer " + token.access_token
+          }
+        })
+      ]);
+
+      req.session.user = {
+        id: user.id,
+        username:
+          user.global_name ||
+          user.username,
+        avatar: user.avatar || null
+      };
+
+      req.session.guilds =
+        guilds.filter(manageable);
+
+      console.log(
+        "OAuth successful for:",
+        req.session.user.username
+      );
+
+      console.log(
+        "Manageable guilds:",
+        req.session.guilds.length
+      );
+
+      /*
+       * IMPORTANT:
+       * Explicitly save the PostgreSQL session before
+       * redirecting. This prevents Render from redirecting
+       * before the session cookie/store entry exists.
+       */
+      req.session.save(error => {
+        if (error) {
+          console.error(
+            "Failed to save OAuth session:",
+            error
+          );
+
+          return res.status(500).send(
+            "Login succeeded, but the session could not be saved. Check the Render database and SESSION_SECRET."
+          );
+        }
+
+        console.log(
+          "OAuth session saved successfully."
+        );
+
+        res.redirect("/dashboard.html");
+      });
+    } catch (error) {
+      console.error(
+        "Discord OAuth callback error:",
+        error
+      );
+
+      res.status(500).send(
+        "Discord login failed. Check OAuth variables, database connection, and redirect URI."
+      );
+    }
+  }
+);
+
+app.post("/auth/logout", (req, res) => {
+  req.session.destroy(error => {
+    if (error) {
+      console.error(
+        "Session destroy error:",
+        error
+      );
+
+      return res.status(500).json({
+        error: "Logout failed"
+      });
+    }
+
+    res.clearCookie("connect.sid");
+
+    res.json({
+      ok: true
+    });
+  });
+});
+
+/* =========================
+   USER
+========================= */
+
+app.get("/api/me", auth, async (req, res) => {
+  const botGuildList = await botGuilds();
+
+  const botGuildIds = new Set(
+    botGuildList.map(guild => guild.id)
+  );
+
+  res.json({
+    user: req.session.user,
+
+    guilds: (req.session.guilds || []).map(
+      guild => ({
+        ...guild,
+        botInstalled:
+          botGuildIds.has(guild.id)
+      })
+    )
+  });
+});
+
+/* =========================
+   GUILD META
+========================= */
+
+app.get(
+  "/api/guilds/:guildId/meta",
+  guildAuth,
+  async (req, res) => {
+    const id = req.guild.id;
+
+    const botGuildList = await botGuilds();
+
+    const installed = botGuildList.some(
+      guild => guild.id === id
+    );
+
+    let roles = [];
+    let channels = [];
+
+    if (
+      installed &&
+      process.env.DISCORD_TOKEN
+    ) {
+      try {
+        [roles, channels] =
+          await Promise.all([
+            discord(
+              `/guilds/${id}/roles`,
+              {
+                headers: {
+                  Authorization:
+                    `Bot ${process.env.DISCORD_TOKEN}`
+                }
+              }
+            ),
+
+            discord(
+              `/guilds/${id}/channels`,
+              {
+                headers: {
+                  Authorization:
+                    `Bot ${process.env.DISCORD_TOKEN}`
+                }
+              }
+            )
+          ]);
+      } catch (error) {
+        console.error(
+          "Guild metadata error:",
+          error
+        );
+      }
+    }
+
+    res.json({
+      guild: req.guild,
+      installed,
+
+      roles: roles.filter(
+        role => !role.managed
+      ),
+
+      channels: channels.filter(
+        channel =>
+          channel.type === 0 ||
+          channel.type === 2
+      )
+    });
+  }
+);
+
+/* =========================
+   SETTINGS
+========================= */
+
+app.get(
+  "/api/guilds/:guildId/settings",
+  guildAuth,
+  async (req, res) => {
+    const result = await db(
+      "SELECT config FROM guild_settings WHERE guild_id=$1",
+      [req.guild.id]
+    );
+
+    res.json({
+      ...defaults,
+      ...(result.rows[0]?.config || {})
+    });
+  }
+);
+
+app.put(
+  "/api/guilds/:guildId/settings",
+  guildAuth,
+  async (req, res) => {
+    const config = {};
+
+    for (const key of Object.keys(defaults)) {
+      if (req.body[key] !== undefined) {
+        config[key] = req.body[key];
+      }
+    }
+
+    await db(
+      `
+      INSERT INTO guild_settings
+      (guild_id, guild_name, config)
+      VALUES ($1, $2, $3)
+      ON CONFLICT(guild_id)
+      DO UPDATE SET
+        guild_name = EXCLUDED.guild_name,
+        config = EXCLUDED.config,
+        updated_at = NOW()
+      `,
+      [
+        req.guild.id,
+        req.guild.name,
+        config
+      ]
+    );
+
+    await db(
+      `
+      INSERT INTO audit_log
+      (guild_id, user_id, action, payload)
+      VALUES ($1, $2, $3, $4)
+      `,
+      [
+        req.guild.id,
+        req.session.user.id,
+        "settings.update",
+        config
+      ]
+    );
+
+    res.json({
+      ok: true,
+
+      settings: {
+        ...defaults,
+        ...config
+      }
+    });
+  }
+);
+
+/* =========================
+   PLAYER
+========================= */
+
+app.get(
+  "/api/guilds/:guildId/player",
+  guildAuth,
+  async (req, res) => {
+    const result = await db(
+      "SELECT state FROM player_state WHERE guild_id=$1",
+      [req.guild.id]
+    );
+
+    res.json(
+      result.rows[0]?.state || {
+        connected: false,
+        playing: false,
+        track: null,
+        queue: [],
+        volume: 80,
+        repeat: "off"
+      }
+    );
+  }
+);
+
+app.post(
+  "/api/guilds/:guildId/player/:command",
+  guildAuth,
+  async (req, res) => {
+    const allowed = [
+      "join",
+      "play",
+      "pause",
+      "resume",
+      "skip",
+      "stop",
+      "shuffle",
+      "previous",
+      "disconnect",
+      "volume",
+      "repeat",
+      "clear"
+    ];
+
+    if (
+      !allowed.includes(req.params.command)
+    ) {
+      return res.status(400).json({
+        error: "Unknown player command"
+      });
+    }
+
+    const payload = req.body || {};
+
+    await db(
+      `
+      INSERT INTO bot_commands
+      (guild_id, command, payload)
+      VALUES ($1, $2, $3)
+      `,
+      [
+        req.guild.id,
+        req.params.command,
+        payload
+      ]
+    );
+
+    await db(
+      `
+      INSERT INTO audit_log
+      (guild_id, user_id, action, payload)
+      VALUES ($1, $2, $3, $4)
+      `,
+      [
+        req.guild.id,
+        req.session.user.id,
+        "player." +
+          req.params.command,
+        payload
+      ]
+    );
+
+    res.json({
+      ok: true,
+      queued: true
+    });
+  }
+);
+
+/* =========================
+   ANALYTICS
+========================= */
+
+app.get(
+  "/api/guilds/:guildId/analytics",
+  guildAuth,
+  async (req, res) => {
+    const days = Math.min(
+      90,
+      Math.max(
+        1,
+        Number(req.query.days || 30)
+      )
+    );
+
+    const result = await db(
+      `
+      SELECT
+        event_type,
+        COUNT(*)::int count
+      FROM analytics_events
+      WHERE guild_id=$1
+        AND created_at >
+          NOW() - ($2 || ' days')::interval
+      GROUP BY event_type
+      ORDER BY count DESC
+      `,
+      [
+        req.guild.id,
+        String(days)
+      ]
+    );
+
+    res.json({
+      days,
+      events: result.rows
+    });
+  }
+);
+
+/* =========================
+   AUDIT
+========================= */
+
+app.get(
+  "/api/guilds/:guildId/audit",
+  guildAuth,
+  async (req, res) => {
+    const result = await db(
+      `
+      SELECT
+        user_id,
+        action,
+        payload,
+        created_at
+      FROM audit_log
+      WHERE guild_id=$1
+      ORDER BY id DESC
+      LIMIT 100
+      `,
+      [req.guild.id]
+    );
+
+    res.json(result.rows);
+  }
+);
+
+/* =========================
+   STATIC FILES
+========================= */
+
+app.use(
+  express.static(
+    path.join(__dirname, "public")
+  )
+);
+
+app.get("/", (_, res) => {
+  res.sendFile(
+    path.join(
+      __dirname,
+      "public",
+      "index.html"
+    )
+  );
+});
+
+/* =========================
+   ERROR HANDLING
+========================= */
+
+app.use(
+  (error, req, res, next) => {
+    console.error(
+      "Unhandled server error:",
+      error
+    );
+
+    if (res.headersSent) {
+      return next(error);
+    }
+
+    res.status(500).json({
+      error: "Internal server error"
+    });
+  }
+);
+
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(
+    `Aether Dashboard 2.0 listening on port ${PORT}`
+  );
+
+  console.log(
+    "Production mode:",
+    isProduction
+  );
+
+  console.log(
+    "Database configured:",
+    !!process.env.DATABASE_URL
+  );
+
+  console.log(
+    "OAuth redirect:",
+    process.env.DISCORD_OAUTH_REDIRECT_URI
+  );
+});
