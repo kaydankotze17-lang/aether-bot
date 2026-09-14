@@ -1,0 +1,4 @@
+import { SlashCommandBuilder } from 'discord.js';
+import { getExistingPlayer, fail } from '../player/requirePlayer.js';
+export const data=new SlashCommandBuilder().setName('move').setDescription('Move a queued track').addIntegerOption(o=>o.setName('from').setDescription('Current queue position').setMinValue(1).setRequired(true)).addIntegerOption(o=>o.setName('to').setDescription('New queue position').setMinValue(1).setRequired(true));
+export async function execute(i){const p=getExistingPlayer(i);if(!p)return fail(i,'Queue is empty.');const from=i.options.getInteger('from',true)-1,to=i.options.getInteger('to',true)-1;if(from<0||to<0||from>=p.tracks.length||to>=p.tracks.length)return fail(i,'Queue position is out of range.');const [t]=p.tracks.splice(from,1);p.tracks.splice(to,0,t);await p.refreshControls();return i.reply({content:`↕️ Moved **${t.title}** to position **${to+1}**.`,ephemeral:true});}
