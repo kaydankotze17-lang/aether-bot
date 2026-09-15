@@ -330,13 +330,41 @@ export class AetherMusicManager {
       return null;
     }
 
+    console.log(
+      `[AETHER MUSIC] Queueing "${next.title}" in guild ${guildId}`
+    );
+
     player.queue.add(next.source);
+
+    console.log(
+      `[AETHER MUSIC] Queue size after add: ${player.queue.size ?? player.queue.length ?? "unknown"}`
+    );
 
     state.current = next;
     state.playing = true;
     state.paused = false;
 
-    await player.play();
+    console.log(
+      `[AETHER MUSIC] Calling player.play() for "${next.title}"`
+    );
+
+    try {
+      await player.play();
+
+      console.log(
+        `[AETHER MUSIC] player.play() completed for "${next.title}"`
+      );
+    } catch (error) {
+      state.playing = false;
+      state.current = null;
+
+      console.error(
+        `[AETHER MUSIC] player.play() failed for "${next.title}":`,
+        error
+      );
+
+      throw error;
+    }
 
     return next;
   }
