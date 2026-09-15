@@ -303,6 +303,26 @@ async function loadGuild() {
       logChannels.innerHTML += option;
     });
 
+    const voiceChannels = $("voiceChannel");
+
+    if (voiceChannels) {
+      voiceChannels.innerHTML =
+        `<option value="">Select a voice channel</option>`;
+
+      (meta.channels || [])
+        .filter(channel =>
+          channel.type === 2 ||
+          channel.type === 13
+        )
+        .forEach(channel => {
+          voiceChannels.innerHTML += `
+            <option value="${channel.id}">
+              ${escapeHtml(channel.name)}
+            </option>
+          `;
+        });
+    }
+
     s = await api(`/api/guilds/${g.id}/settings`);
 
     fill();

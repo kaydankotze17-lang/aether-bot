@@ -272,6 +272,83 @@ async function initializeDatabase() {
 }
 
 /* =========================
+   ANALYTICS
+========================= */
+
+app.get(
+  "/api/guilds/:guildId/analytics",
+  guildAuth,
+  async (req, res) => {
+    try {
+      const days = Math.min(
+        Math.max(Number(req.query.days) || 30, 1),
+        90
+      );
+
+      const result = await db(
+        `
+        SELECT
+          event_type,
+          COUNT(*)::int AS count
+        FROM analytics_events
+        WHERE guild_id = $1
+          AND created_at >= NOW() - ($2 * INTERVAL '1 day')
+        GROUP BY event_type
+        ORDER BY count DESC
+        `,
+        [req.guild.id, days]
+      );
+
+      res.json({
+        events: result.rows
+      });
+    } catch (error) {
+      console.error("Analytics error:", error);
+      res.status(500).json({
+        error: "Failed to load analytics."
+      });
+    }
+  }
+);
+
+/* =========================
+   AUDIT LOG
+========================= */
+
+app.get(
+  "/api/guilds/:guildId/audit",
+  guildAuth,
+  async (req, res) => {
+    try {
+      const result = await db(
+        `
+        SELECT
+          id,
+          user_id,
+          action,
+          payload,
+          created_at
+        FROM audit_log
+        WHERE guild_id = $1
+        ORDER BY created_at DESC
+        LIMIT 100
+        `,
+        [req.guild.id]
+      );
+
+      res.json({
+        entries: result.rows
+      });
+    } catch (error) {
+      console.error("Audit log error:", error);
+      res.status(500).json({
+        error: "Failed to load audit log."
+      });
+    }
+  }
+);
+
+/* =========================
    DISCORD API
 ========================= */
 
