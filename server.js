@@ -180,7 +180,7 @@ const slashCommands = [
           ChannelType.GuildVoice,
           ChannelType.GuildStageVoice
         )
-        .setRequired(true)
+        .setRequired(false)
     )
     .setDMPermission(false),
 
@@ -428,15 +428,30 @@ discordClient.on(
       /* JOIN */
 
       if (command === "join") {
-        const channel =
+        const selectedChannel =
           interaction.options.getChannel(
             "channel",
-            true
+            false
           );
+
+        const memberChannel =
+          interaction.member?.voice?.channel;
+
+        const voiceChannel =
+          selectedChannel ||
+          memberChannel;
+
+        if (!voiceChannel) {
+          await interaction.editReply(
+            "Join a voice channel first, or choose one with the channel option."
+          );
+
+          return;
+        }
 
         payload = {
           voiceChannelId:
-            channel.id
+            voiceChannel.id
         };
       }
 
