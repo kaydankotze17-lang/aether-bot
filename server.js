@@ -80,8 +80,17 @@ let dashboardBridge = null;
 
 discordClient.once(
   "clientReady",
-  client => {
+  async client => {
     botReady = true;
+
+    try {
+      await musicManager.init();
+    } catch (error) {
+      console.error(
+        "[Aether] Failed to initialize Lavalink:",
+        error
+      );
+    }
 
     console.log(
       "================================="
