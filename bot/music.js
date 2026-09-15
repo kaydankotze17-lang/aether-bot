@@ -20,7 +20,9 @@ export class AetherMusicManager {
           host,
           port,
           password,
-          secure: String(process.env.LAVALINK_SECURE).toLowerCase() === "true"
+          secure:
+            String(process.env.LAVALINK_SECURE).toLowerCase() === "true" ||
+            port === 443
         }
       ],
       {
