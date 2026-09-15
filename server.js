@@ -6,44 +6,77 @@ import pg from "pg";
 import crypto from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+
 import {
   Client,
   GatewayIntentBits,
-  Partials
+  Partials,
+  SlashCommandBuilder,
+  ChannelType,
+  REST,
+  Routes
 } from "discord.js";
-import { AetherMusicManager } from "./bot/music.js";
-import { createAetherDashboardBridge } from "./bot-bridge/bridge.js";
 
-const __dirname =
-  path.dirname(fileURLToPath(import.meta.url));
+import { AetherMusicManager } from "./bot/music.js";
+import {
+  createAetherDashboardBridge
+} from "./bot-bridge/bridge.js";
+
+const __dirname = path.dirname(
+  fileURLToPath(import.meta.url)
+);
 
 const app = express();
-app.use(express.static(path.join(__dirname, "public")));
-const PORT =
-  Number(process.env.PORT || 3000);
+
+const PORT = Number(
+  process.env.PORT || 3000
+);
 
 const isProduction =
   process.env.NODE_ENV === "production" ||
   process.env.RENDER === "true";
 
+app.use(
+  express.json({
+    limit: "100kb"
+  })
+);
+
+app.use(
+  express.static(
+    path.join(__dirname, "public")
+  )
+);
+
+app.set("trust proxy", 1);
+
 /* =========================
-   DISCORD BOT
+   DISCORD CLIENT
 ========================= */
 
-const discordClient =
-  new Client({
-    intents: [
-      GatewayIntentBits.Guilds,
-      GatewayIntentBits.GuildMembers,
-      GatewayIntentBits.GuildVoiceStates
-    ],
-    partials: [
-      Partials.GuildMember
-    ]
-  });
+const discordClient = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildVoiceStates
+  ],
 
-const musicManager = new AetherMusicManager(discordClient);
+  partials: [
+    Partials.GuildMember
+  ]
+});
+
+const musicManager =
+  new AetherMusicManager(
+    discordClient
+  );
+
 let botReady = false;
+let dashboardBridge = null;
+
+/* =========================
+   BASIC DISCORD EVENTS
+========================= */
 
 discordClient.once(
   "clientReady",
@@ -76,7 +109,7 @@ discordClient.on(
   "error",
   error => {
     console.error(
-      "Discord client error:",
+      "[Discord Error]",
       error
     );
   }
@@ -86,7 +119,7 @@ discordClient.on(
   "warn",
   warning => {
     console.warn(
-      "Discord warning:",
+      "[Discord Warning]",
       warning
     );
   }
@@ -96,27 +129,533 @@ discordClient.on(
   "shardError",
   error => {
     console.error(
-      "Discord shard error:",
+      "[Discord Shard Error]",
       error
     );
   }
 );
 
+/* =========================
+   DISCORD LOGIN
+========================= */
+
 if (!process.env.DISCORD_TOKEN) {
   console.error(
-    "DISCORD_TOKEN is missing."
+    "[Aether] DISCORD_TOKEN is missing."
   );
 } else {
-  discordClient.login(
-    process.env.DISCORD_TOKEN
-  ).catch(error => {
+  discordClient
+    .login(
+      process.env.DISCORD_TOKEN
+    )
+    .catch(error => {
+      console.error(
+        "[Aether] Discord login failed:",
+        error
+      );
+    });
+}
+/* =========================
+   SLASH COMMANDS
+========================= */
+
+const slashCommands = [
+  new SlashCommandBuilder()
+    .setName("join")
+    .setDescription("Join a voice channel")
+    .addChannelOption(option =>
+      option
+        .setName("channel")
+        .setDescription("Voice channel to join")
+        .addChannelTypes(
+          ChannelType.GuildVoice,
+          ChannelType.GuildStageVoice
+        )
+        .setRequired(true)
+    )
+    .setDMPermission(false),
+
+  new SlashCommandBuilder()
+    .setName("play")
+    .setDescription("Play a song or URL")
+    .addStringOption(option =>
+      option
+        .setName("query")
+        .setDescription("Song name or URL")
+        .setRequired(true)
+    )
+    .addChannelOption(option =>
+      option
+        .setName("channel")
+        .setDescription("Voice channel to use")
+        .addChannelTypes(
+          ChannelType.GuildVoice,
+          ChannelType.GuildStageVoice
+        )
+        .setRequired(false)
+    )
+    .setDMPermission(false),
+
+  new SlashCommandBuilder()
+    .setName("pause")
+    .setDescription("Pause playback")
+    .setDMPermission(false),
+
+  new SlashCommandBuilder()
+    .setName("resume")
+    .setDescription("Resume playback")
+    .setDMPermission(false),
+
+  new SlashCommandBuilder()
+    .setName("skip")
+    .setDescription("Skip the current track")
+    .setDMPermission(false),
+
+  new SlashCommandBuilder()
+    .setName("stop")
+    .setDescription("Stop playback")
+    .setDMPermission(false),
+
+  new SlashCommandBuilder()
+    .setName("shuffle")
+    .setDescription("Shuffle the queue")
+    .setDMPermission(false),
+
+  new SlashCommandBuilder()
+    .setName("previous")
+    .setDescription("Play the previous track")
+    .setDMPermission(false),
+
+  new SlashCommandBuilder()
+    .setName("disconnect")
+    .setDescription("Leave the voice channel")
+    .setDMPermission(false),
+
+  new SlashCommandBuilder()
+    .setName("volume")
+    .setDescription("Set the player volume")
+    .addIntegerOption(option =>
+      option
+        .setName("amount")
+        .setDescription("Volume from 0 to 100")
+        .setMinValue(0)
+        .setMaxValue(100)
+        .setRequired(true)
+    )
+    .setDMPermission(false),
+
+  new SlashCommandBuilder()
+    .setName("repeat")
+    .setDescription("Set repeat mode")
+    .addStringOption(option =>
+      option
+        .setName("mode")
+        .setDescription("Repeat mode")
+        .setRequired(true)
+        .addChoices(
+          {
+            name: "Off",
+            value: "off"
+          },
+          {
+            name: "Track",
+            value: "track"
+          },
+          {
+            name: "Queue",
+            value: "queue"
+          }
+        )
+    )
+    .setDMPermission(false)
+].map(command => command.toJSON());
+
+/* =========================
+   REGISTER COMMANDS
+========================= */
+
+async function registerCommands() {
+  if (!process.env.DISCORD_TOKEN) {
     console.error(
-      "Failed to login to Discord:",
+      "[Aether] Cannot register commands: DISCORD_TOKEN missing."
+    );
+    return;
+  }
+
+  const clientId =
+    process.env.DISCORD_CLIENT_ID ||
+    discordClient.user?.id;
+
+  if (!clientId) {
+    console.error(
+      "[Aether] Cannot register commands: client ID missing."
+    );
+    return;
+  }
+
+  const rest = new REST({
+    version: "10"
+  }).setToken(
+    process.env.DISCORD_TOKEN
+  );
+
+  try {
+    console.log(
+      `[Aether] Registering ${slashCommands.length} slash commands...`
+    );
+
+    const guilds =
+      discordClient.guilds.cache;
+
+    for (const guild of guilds.values()) {
+      await rest.put(
+        Routes.applicationGuildCommands(
+          clientId,
+          guild.id
+        ),
+        {
+          body: slashCommands
+        }
+      );
+
+      console.log(
+        `[Aether] Commands registered in ${guild.name}`
+      );
+    }
+
+    console.log(
+      "[Aether] Slash command registration complete."
+    );
+  } catch (error) {
+    console.error(
+      "[Aether] Command registration failed:",
       error
     );
-  });
+  }
 }
 
+/* =========================
+   NEW SERVER
+========================= */
+
+discordClient.on(
+  "guildCreate",
+  async guild => {
+    console.log(
+      `[Aether] Joined ${guild.name}`
+    );
+
+    try {
+      const rest = new REST({
+        version: "10"
+      }).setToken(
+        process.env.DISCORD_TOKEN
+      );
+
+      await rest.put(
+        Routes.applicationGuildCommands(
+          discordClient.user.id,
+          guild.id
+        ),
+        {
+          body: slashCommands
+        }
+      );
+
+      console.log(
+        `[Aether] Commands registered in ${guild.name}`
+      );
+    } catch (error) {
+      console.error(
+        "[Aether] Failed to register new guild commands:",
+        error
+      );
+    }
+  }
+);
+
+/* =========================
+   REGISTER AFTER LOGIN
+========================= */
+
+discordClient.once(
+  "clientReady",
+  async () => {
+    await registerCommands();
+  }
+);
+/* =========================
+   SLASH COMMAND HANDLER
+========================= */
+
+discordClient.on(
+  "interactionCreate",
+  async interaction => {
+    if (!interaction.isChatInputCommand()) {
+      return;
+    }
+
+    if (!interaction.guildId) {
+      await interaction.reply({
+        content:
+          "Music commands can only be used inside a server.",
+        ephemeral: true
+      }).catch(() => {});
+
+      return;
+    }
+
+    const guildId =
+      interaction.guildId;
+
+    const command =
+      interaction.commandName;
+
+    try {
+      await interaction.deferReply();
+
+      let payload = {};
+
+      /* JOIN */
+
+      if (command === "join") {
+        const channel =
+          interaction.options.getChannel(
+            "channel",
+            true
+          );
+
+        payload = {
+          voiceChannelId:
+            channel.id
+        };
+      }
+
+      /* PLAY */
+
+      else if (command === "play") {
+        const query =
+          interaction.options.getString(
+            "query",
+            true
+          );
+
+        const selectedChannel =
+          interaction.options.getChannel(
+            "channel",
+            false
+          );
+
+        const memberChannel =
+          interaction.member?.voice?.channel;
+
+        const voiceChannel =
+          selectedChannel ||
+          memberChannel;
+
+        if (!voiceChannel) {
+          await interaction.editReply(
+            "Join a voice channel first, or choose one with the channel option."
+          );
+
+          return;
+        }
+
+        payload = {
+          query,
+
+          voiceChannelId:
+            voiceChannel.id,
+
+          requester:
+            interaction.user.id,
+
+          requesterName:
+            interaction.user.username
+        };
+      }
+
+      /* VOLUME */
+
+      else if (command === "volume") {
+        payload = {
+          volume:
+            interaction.options.getInteger(
+              "amount",
+              true
+            )
+        };
+      }
+
+      /* REPEAT */
+
+      else if (command === "repeat") {
+        payload = {
+          mode:
+            interaction.options.getString(
+              "mode",
+              true
+            )
+        };
+      }
+
+      /* OTHER COMMANDS */
+
+      else if (
+        [
+          "pause",
+          "resume",
+          "skip",
+          "stop",
+          "shuffle",
+          "previous",
+          "disconnect"
+        ].includes(command)
+      ) {
+        payload = {};
+      }
+
+      else {
+        await interaction.editReply(
+          "Unknown Aether command."
+        );
+
+        return;
+      }
+
+      /* SEND TO MUSIC MANAGER */
+
+      const result =
+        await musicManager.handleCommand({
+          guildId,
+          command,
+          payload
+        });
+
+      /* SAVE CURRENT STATE */
+
+      const state =
+        musicManager.getState(
+          guildId
+        );
+
+      if (pool && state) {
+        await db(
+          `
+          INSERT INTO player_state
+            (guild_id, state)
+          VALUES
+            ($1, $2)
+          ON CONFLICT (guild_id)
+          DO UPDATE SET
+            state = EXCLUDED.state,
+            updated_at = NOW()
+          `,
+          [
+            guildId,
+            state
+          ]
+        );
+      }
+
+      /* RESPONSE */
+
+      const message =
+        getCommandResponse(
+          command,
+          result,
+          state
+        );
+
+      await interaction.editReply(
+        message
+      );
+    } catch (error) {
+      console.error(
+        `[Aether] /${command} failed:`,
+        error
+      );
+
+      const message =
+        `Aether error: ${
+          error?.message ||
+          "Something went wrong."
+        }`;
+
+      if (
+        interaction.deferred ||
+        interaction.replied
+      ) {
+        await interaction
+          .editReply(message)
+          .catch(() => {});
+      } else {
+        await interaction
+          .reply({
+            content: message,
+            ephemeral: true
+          })
+          .catch(() => {});
+      }
+    }
+  }
+);
+
+/* =========================
+   COMMAND RESPONSES
+========================= */
+
+function getCommandResponse(
+  command,
+  result,
+  state
+) {
+  if (
+    result?.message
+  ) {
+    return result.message;
+  }
+
+  switch (command) {
+    case "join":
+      return "Joined the voice channel.";
+
+    case "play":
+      return state?.current
+        ? `Playing: ${state.current.title || "requested track"}`
+        : "Track added to the queue.";
+
+    case "pause":
+      return "Playback paused.";
+
+    case "resume":
+      return "Playback resumed.";
+
+    case "skip":
+      return "Skipped the current track.";
+
+    case "stop":
+      return "Playback stopped.";
+
+    case "shuffle":
+      return "Queue shuffled.";
+
+    case "previous":
+      return "Previous track requested.";
+
+    case "disconnect":
+      return "Disconnected from the voice channel.";
+
+    case "volume":
+      return `Volume set to ${state?.volume ?? 80}%.`;
+
+    case "repeat":
+      return `Repeat mode set to ${state?.repeat || "off"}.`;
+
+    default:
+      return "Command completed.";
+  }
+}
 /* =========================
    DATABASE
 ========================= */
@@ -137,24 +676,17 @@ const pool =
       })
     : null;
 
-app.set(
-  "trust proxy",
-  1
-);
+/* =========================
+   SESSION
+========================= */
 
-app.use(
-  express.json({
-    limit: "100kb"
-  })
-);
-
-const Store =
+const PgStore =
   pgSession(session);
 
 app.use(
   session({
     store: pool
-      ? new Store({
+      ? new PgStore({
           pool,
           createTableIfMissing:
             true
@@ -167,51 +699,66 @@ app.use(
         .randomBytes(32)
         .toString("hex"),
 
-    resave: false,
+    resave:
+      false,
 
     saveUninitialized:
       false,
 
-    proxy: true,
+    proxy:
+      true,
 
     cookie: {
-      httpOnly: true,
+      httpOnly:
+        true,
 
       secure:
         isProduction,
 
-      sameSite: "lax",
+      sameSite:
+        "lax",
 
       maxAge:
-        7 * 86400000
+        7 * 24 * 60 * 60 * 1000
     }
   })
 );
+
 /* =========================
-   DATABASE HELPERS
+   DATABASE HELPER
 ========================= */
 
-async function db(sql, params = []) {
+async function db(
+  sql,
+  params = []
+) {
   if (!pool) {
     throw new Error(
-      "DATABASE_URL is required for persistent dashboard data"
+      "DATABASE_URL is not configured."
     );
   }
 
-  return pool.query(sql, params);
+  return pool.query(
+    sql,
+    params
+  );
 }
+
+/* =========================
+   DATABASE INITIALIZATION
+========================= */
 
 async function initializeDatabase() {
   if (!pool) {
     console.warn(
-      "DATABASE_URL is not configured."
+      "[Aether] DATABASE_URL is missing."
     );
 
     return;
   }
 
   console.log(
-    "Initializing Aether database..."
+    "[Aether] Initializing database..."
   );
 
   await db(`
@@ -267,89 +814,12 @@ async function initializeDatabase() {
   `);
 
   console.log(
-    "Aether database tables initialized successfully."
+    "[Aether] Database ready."
   );
 }
 
 /* =========================
-   ANALYTICS
-========================= */
-
-app.get(
-  "/api/guilds/:guildId/analytics",
-  guildAuth,
-  async (req, res) => {
-    try {
-      const days = Math.min(
-        Math.max(Number(req.query.days) || 30, 1),
-        90
-      );
-
-      const result = await db(
-        `
-        SELECT
-          event_type,
-          COUNT(*)::int AS count
-        FROM analytics_events
-        WHERE guild_id = $1
-          AND created_at >= NOW() - ($2 * INTERVAL '1 day')
-        GROUP BY event_type
-        ORDER BY count DESC
-        `,
-        [req.guild.id, days]
-      );
-
-      res.json({
-        events: result.rows
-      });
-    } catch (error) {
-      console.error("Analytics error:", error);
-      res.status(500).json({
-        error: "Failed to load analytics."
-      });
-    }
-  }
-);
-
-/* =========================
-   AUDIT LOG
-========================= */
-
-app.get(
-  "/api/guilds/:guildId/audit",
-  guildAuth,
-  async (req, res) => {
-    try {
-      const result = await db(
-        `
-        SELECT
-          id,
-          user_id,
-          action,
-          payload,
-          created_at
-        FROM audit_log
-        WHERE guild_id = $1
-        ORDER BY created_at DESC
-        LIMIT 100
-        `,
-        [req.guild.id]
-      );
-
-      res.json({
-        entries: result.rows
-      });
-    } catch (error) {
-      console.error("Audit log error:", error);
-      res.status(500).json({
-        error: "Failed to load audit log."
-      });
-    }
-  }
-);
-
-/* =========================
-   DISCORD API
+   DISCORD API HELPER
 ========================= */
 
 async function discord(
@@ -358,8 +828,7 @@ async function discord(
 ) {
   const response =
     await fetch(
-      "https://discord.com/api/v10" +
-        pathname,
+      `https://discord.com/api/v10${pathname}`,
       {
         ...options,
 
@@ -381,16 +850,17 @@ async function discord(
   let data;
 
   try {
-    data = JSON.parse(text);
+    data =
+      JSON.parse(text);
   } catch {
-    data = text;
+    data =
+      text;
   }
 
   if (!response.ok) {
     const error =
       new Error(
-        "Discord API " +
-          response.status
+        `Discord API ${response.status}`
       );
 
     error.status =
@@ -404,50 +874,14 @@ async function discord(
 
   return data;
 }
-
 /* =========================
-   BOT STATUS
-========================= */
-
-function getBotGuilds() {
-  if (!botReady) {
-    return [];
-  }
-
-  return Array.from(
-    discordClient.guilds.cache.values()
-  ).map(guild => ({
-    id: guild.id,
-    name: guild.name,
-    icon: guild.icon
-      ? `https://cdn.discordapp.com/icons/${guild.id}/${guild.icon}.png`
-      : null
-  }));
-}
-let dashboardBridge = null;
-
-
-function botIsInGuild(
-  guildId
-) {
-  if (!botReady) {
-    return false;
-  }
-
-  return discordClient.guilds.cache.has(
-    String(guildId)
-  );
-}
-
-/* =========================
-   PERMISSIONS
+   AUTH HELPERS
 ========================= */
 
 function manageable(guild) {
   const permissions =
     BigInt(
-      guild.permissions ||
-        "0"
+      guild.permissions || "0"
     );
 
   return (
@@ -462,10 +896,6 @@ function manageable(guild) {
     )
   );
 }
-
-/* =========================
-   AUTH MIDDLEWARE
-========================= */
 
 function auth(
   req,
@@ -484,7 +914,7 @@ function auth(
   next();
 }
 
-async function guildAuth(
+function guildAuth(
   req,
   res,
   next
@@ -540,15 +970,11 @@ function oauth() {
     "https://discord.com/oauth2/authorize?" +
     new URLSearchParams({
       client_id:
-        process.env
-          .DISCORD_OAUTH_CLIENT_ID ||
-        process.env
-          .DISCORD_CLIENT_ID ||
+        process.env.DISCORD_CLIENT_ID ||
         "",
 
       redirect_uri:
-        process.env
-          .DISCORD_OAUTH_REDIRECT_URI ||
+        process.env.DISCORD_OAUTH_REDIRECT_URI ||
         "",
 
       response_type:
@@ -559,13 +985,14 @@ function oauth() {
     }).toString()
   );
 }
+
 /* =========================
-   LOGIN
+   OAUTH LOGIN
 ========================= */
 
 app.get(
   "/auth/discord",
-  (_, res) => {
+  (req, res) => {
     res.redirect(
       oauth()
     );
@@ -583,7 +1010,10 @@ app.get(
     res
   ) => {
     try {
-      if (!req.query.code) {
+      const code =
+        req.query.code;
+
+      if (!code) {
         return res
           .status(400)
           .send(
@@ -591,37 +1021,40 @@ app.get(
           );
       }
 
-      const body =
-        new URLSearchParams({
-          client_id:
-            process.env
-              .DISCORD_OAUTH_CLIENT_ID ||
-            process.env
-              .DISCORD_CLIENT_ID ||
-            "",
+      const params =
+        new URLSearchParams();
 
-          client_secret:
-            process.env
-              .DISCORD_OAUTH_CLIENT_SECRET ||
-            "",
+      params.set(
+        "client_id",
+        process.env.DISCORD_CLIENT_ID ||
+          ""
+      );
 
-          grant_type:
-            "authorization_code",
+      params.set(
+        "client_secret",
+        process.env.DISCORD_OAUTH_CLIENT_SECRET ||
+          ""
+      );
 
-          code:
-            String(
-              req.query.code
-            ),
+      params.set(
+        "grant_type",
+        "authorization_code"
+      );
 
-          redirect_uri:
-            process.env
-              .DISCORD_OAUTH_REDIRECT_URI ||
-            ""
-        });
+      params.set(
+        "code",
+        code
+      );
+
+      params.set(
+        "redirect_uri",
+        process.env.DISCORD_OAUTH_REDIRECT_URI ||
+          ""
+      );
 
       const tokenResponse =
         await fetch(
-          "https://discord.com/api/v10/oauth2/token",
+          "https://discord.com/api/oauth2/token",
           {
             method:
               "POST",
@@ -631,129 +1064,113 @@ app.get(
                 "application/x-www-form-urlencoded"
             },
 
-            body
+            body:
+              params.toString()
           }
         );
 
-      if (
-        !tokenResponse.ok
-      ) {
-        const errorText =
-          await tokenResponse.text();
-
+      if (!tokenResponse.ok) {
         console.error(
-          "Discord OAuth token exchange failed:",
-          errorText
+          "[Aether] OAuth token exchange failed."
         );
 
-        throw new Error(
-          "OAuth exchange failed"
-        );
+        return res
+          .status(500)
+          .send(
+            "Discord OAuth failed."
+          );
       }
 
-      const token =
+      const tokenData =
         await tokenResponse.json();
 
-      if (
-        !token.access_token
-      ) {
-        throw new Error(
-          "Discord did not return an access token"
+      const userResponse =
+        await fetch(
+          "https://discord.com/api/v10/users/@me",
+          {
+            headers: {
+              Authorization:
+                `Bearer ${tokenData.access_token}`
+            }
+          }
         );
-      }
 
-      const [
-        user,
-        guilds
-      ] =
-        await Promise.all([
-          discord(
-            "/users/@me",
-            {
-              headers: {
-                Authorization:
-                  "Bearer " +
-                  token.access_token
-              }
+      const user =
+        await userResponse.json();
+
+      const guildResponse =
+        await fetch(
+          "https://discord.com/api/v10/users/@me/guilds",
+          {
+            headers: {
+              Authorization:
+                `Bearer ${tokenData.access_token}`
             }
-          ),
+          }
+        );
 
-          discord(
-            "/users/@me/guilds",
-            {
-              headers: {
-                Authorization:
-                  "Bearer " +
-                  token.access_token
-              }
-            }
-          )
-        ]);
+      const guilds =
+        guildResponse.ok
+          ? await guildResponse.json()
+          : [];
 
-      req.session.user = {
-        id:
-          user.id,
+      const manageableGuilds =
+        guilds.filter(
+          guild =>
+            manageable(guild)
+        );
 
-        username:
-          user.global_name ||
-          user.username,
-
-        avatar:
-          user.avatar ||
-          null
-      };
+      req.session.user =
+        user;
 
       req.session.guilds =
-        guilds.filter(
-          manageable
-        );
+        manageableGuilds;
 
-      console.log(
-        "OAuth successful for:",
-        req.session.user.username
-      );
+      req.session.accessToken =
+        tokenData.access_token;
 
-      console.log(
-        "Manageable guilds:",
-        req.session.guilds.length
-      );
+      req.session.refreshToken =
+        tokenData.refresh_token ||
+        null;
 
       req.session.save(
         error => {
           if (error) {
             console.error(
-              "Failed to save OAuth session:",
+              "[Aether] Session save failed:",
               error
             );
 
             return res
               .status(500)
               .send(
-                "Login succeeded, but the session could not be saved."
+                "Failed to save login session."
               );
           }
 
           console.log(
-            "OAuth session saved successfully."
+            `OAuth successful for: ${user.username}`
+          );
+
+          console.log(
+            `Manageable guilds: ${manageableGuilds.length}`
           );
 
           res.redirect(
-            "/dashboard.html"
+            "/"
           );
         }
       );
-    } catch (
-      error
-    ) {
+    } catch (error) {
       console.error(
-        "Discord OAuth callback error:",
+        "[Aether] OAuth callback error:",
         error
       );
 
       res
         .status(500)
         .send(
-          "Discord login failed. Check OAuth variables, database connection, and redirect URI."
+          "Authentication failed."
         );
     }
   }
@@ -763,58 +1180,16 @@ app.get(
    LOGOUT
 ========================= */
 
-app.post(
+app.get(
   "/auth/logout",
-  (
-    req,
-    res
-  ) => {
+  (req, res) => {
     req.session.destroy(
-      error => {
-        if (error) {
-          console.error(
-            "Session destroy error:",
-            error
-          );
-
-          return res
-            .status(500)
-            .json({
-              error:
-                "Logout failed"
-            });
-        }
-
-        res.clearCookie(
-          "connect.sid"
+      () => {
+        res.redirect(
+          "/"
         );
-
-        res.json({
-          ok: true
-        });
       }
     );
-  }
-);
-
-/* =========================
-   PUBLIC CONFIG
-========================= */
-
-app.get(
-  "/api/public-config",
-  (
-    _,
-    res
-  ) => {
-    res.json({
-      clientId:
-        process.env
-          .DISCORD_CLIENT_ID ||
-        process.env
-          .DISCORD_OAUTH_CLIENT_ID ||
-        null
-    });
   }
 );
 
@@ -824,182 +1199,85 @@ app.get(
 
 app.get(
   "/api/me",
-  auth,
-  async (
-    req,
-    res
-  ) => {
-    const liveGuilds =
-      getBotGuilds();
+  (req, res) => {
+    if (!req.session.user) {
+      return res.json({
+        authenticated:
+          false,
 
-    const botGuildIds =
-      new Set(
-        liveGuilds.map(
-          guild =>
-            guild.id
-        )
-      );
+        user:
+          null,
 
-    const guilds =
-      (
-        req.session.guilds ||
-        []
-      ).map(
-        guild => ({
-          ...guild,
-
-          botInstalled:
-            botGuildIds.has(
-              guild.id
-            ),
-
-          botOnline:
-            botReady &&
-            botGuildIds.has(
-              guild.id
-            )
-        })
-      );
+        guilds:
+          []
+      });
+    }
 
     res.json({
+      authenticated:
+        true,
+
       user:
         req.session.user,
 
-      bot: {
-        online:
-          botReady,
+      guilds:
+        req.session.guilds ||
+        []
+    });
+  }
+);
 
-        username:
-          discordClient.user
-            ?.username ||
-          null,
+/* =========================
+   PUBLIC CONFIG
+========================= */
 
-        tag:
-          discordClient.user
-            ?.tag ||
-          null,
+app.get(
+  "/api/public-config",
+  (req, res) => {
+    res.json({
+      clientId:
+        process.env.DISCORD_CLIENT_ID ||
+        null,
 
-        id:
-          discordClient.user
-            ?.id ||
-          null,
+      loginUrl:
+        oauth(),
 
-        guildCount:
-          liveGuilds.length
-      },
+      botReady,
 
-      guilds
+      botGuildCount:
+        discordClient.guilds.cache.size
     });
   }
 );
 /* =========================
-   GUILD META
+   BOT / GUILD HELPERS
 ========================= */
 
-app.get(
-  "/api/guilds/:guildId/meta",
-  guildAuth,
-  async (
-    req,
-    res
-  ) => {
-    const guildId =
-      req.guild.id;
-
-    const installed =
-      botIsInGuild(
-        guildId
-      );
-
-    let roles = [];
-    let channels = [];
-
-    if (
-      installed &&
-      botReady
-    ) {
-      try {
-        const guild =
-          discordClient.guilds.cache.get(
-            guildId
-          );
-
-        if (guild) {
-          roles =
-            Array.from(
-              guild.roles.cache.values()
-            )
-              .filter(
-                role =>
-                  !role.managed
-              )
-              .map(
-                role => ({
-                  id:
-                    role.id,
-
-                  name:
-                    role.name,
-
-                  position:
-                    role.position,
-
-                  color:
-                    role.hexColor
-                })
-              );
-
-          channels =
-            Array.from(
-              guild.channels.cache.values()
-            )
-              .filter(
-                channel =>
-                  channel.type === 0 ||
-                  channel.type === 2
-              )
-              .map(
-                channel => ({
-                  id:
-                    channel.id,
-
-                  name:
-                    channel.name,
-
-                  type:
-                    channel.type,
-
-                  parentId:
-                    channel.parentId ||
-                    null
-                })
-              );
-        }
-      } catch (
-        error
-      ) {
-        console.error(
-          "Guild metadata error:",
-          error
-        );
-      }
-    }
-
-    res.json({
-      guild:
-        req.guild,
-
-      installed,
-
-      botOnline:
-        botReady,
-
-      roles,
-
-      channels
-    });
+function getBotGuilds() {
+  if (!botReady) {
+    return [];
   }
-);
+
+  return Array.from(
+    discordClient.guilds.cache.values()
+  ).map(guild => ({
+    id: guild.id,
+
+    name: guild.name,
+
+    icon: guild.icon
+      ? `https://cdn.discordapp.com/icons/${guild.id}/${guild.icon}.png`
+      : null
+  }));
+}
+
+function botIsInGuild(
+  guildId
+) {
+  return discordClient.guilds.cache.has(
+    String(guildId)
+  );
+}
 
 /* =========================
    BOT STATUS
@@ -1008,36 +1286,35 @@ app.get(
 app.get(
   "/api/bot/status",
   auth,
-  (
-    req,
-    res
-  ) => {
-    const guilds =
-      getBotGuilds();
-
+  (req, res) => {
     res.json({
-      online:
+      ready:
         botReady,
 
-      username:
-        discordClient.user
-          ?.username ||
-        null,
+      user:
+        botReady
+          ? {
+              id:
+                discordClient.user.id,
 
-      tag:
-        discordClient.user
-          ?.tag ||
-        null,
+              tag:
+                discordClient.user.tag,
 
-      id:
-        discordClient.user
-          ?.id ||
-        null,
+              username:
+                discordClient.user.username,
+
+              avatar:
+                discordClient.user.displayAvatarURL({
+                  size: 128
+                })
+            }
+          : null,
 
       guildCount:
-        guilds.length,
+        discordClient.guilds.cache.size,
 
-      guilds
+      guilds:
+        getBotGuilds()
     });
   }
 );
@@ -1049,226 +1326,197 @@ app.get(
 app.get(
   "/api/guilds/:guildId/bot",
   guildAuth,
-  (
-    req,
-    res
-  ) => {
+  (req, res) => {
     const guildId =
-      req.guild.id;
-
-    const installed =
-      botIsInGuild(
-        guildId
+      String(
+        req.params.guildId
       );
 
-    let guild =
-      null;
-
-    if (installed) {
-      guild =
-        discordClient.guilds.cache.get(
-          guildId
-        );
-    }
-
     res.json({
-      online:
-        botReady,
+      guildId,
 
-      installed,
+      botReady,
 
-      guild:
-        guild
-          ? {
-              id:
-                guild.id,
-
-              name:
-                guild.name,
-
-              icon:
-                guild.iconURL({
-                  extension:
-                    "png",
-
-                  size:
-                    128
-                })
-            }
-          : null
+      installed:
+        botIsInGuild(
+          guildId
+        )
     });
   }
 );
 
 /* =========================
-   INVITE BOT
+   GUILD META
+========================= */
+
+app.get(
+  "/api/guilds/:guildId/meta",
+  guildAuth,
+  (req, res) => {
+    try {
+      const guild =
+        discordClient.guilds.cache.get(
+          req.guild.id
+        );
+
+      if (!guild) {
+        return res.json({
+          guild:
+            req.guild,
+
+          channels:
+            []
+        });
+      }
+
+      const channels =
+        guild.channels.cache
+          .filter(channel =>
+            channel.type ===
+              ChannelType.GuildText ||
+            channel.type ===
+              ChannelType.GuildVoice ||
+            channel.type ===
+              ChannelType.GuildStageVoice
+          )
+          .map(channel => ({
+            id:
+              channel.id,
+
+            name:
+              channel.name,
+
+            type:
+              channel.type,
+
+            parentId:
+              channel.parentId,
+
+            position:
+              channel.position
+          }))
+          .sort(
+            (a, b) =>
+              a.position -
+              b.position
+          );
+
+      res.json({
+        guild: {
+          id:
+            guild.id,
+
+          name:
+            guild.name,
+
+          icon:
+            guild.icon
+              ? `https://cdn.discordapp.com/icons/${guild.id}/${guild.icon}.png`
+              : null
+        },
+
+        channels
+      });
+    } catch (error) {
+      console.error(
+        "[Aether] Guild meta error:",
+        error
+      );
+
+      res
+        .status(500)
+        .json({
+          error:
+            "Failed to load server information."
+        });
+    }
+  }
+);
+
+/* =========================
+   BOT INVITE
 ========================= */
 
 app.get(
   "/api/guilds/:guildId/invite",
-  auth,
-  (
-    req,
-    res
-  ) => {
+  guildAuth,
+  (req, res) => {
     const clientId =
-      process.env
-        .DISCORD_CLIENT_ID ||
-      process.env
-        .DISCORD_OAUTH_CLIENT_ID;
+      process.env.DISCORD_CLIENT_ID;
 
     if (!clientId) {
       return res
         .status(500)
         .json({
           error:
-            "Discord client ID is not configured."
+            "DISCORD_CLIENT_ID is missing."
         });
     }
 
-    const url =
+    const permissions =
+      36700160;
+
+    const invite =
       "https://discord.com/oauth2/authorize?" +
       new URLSearchParams({
         client_id:
           clientId,
 
-        guild_id:
-          String(
-            req.params.guildId
-          ),
-
         scope:
           "bot applications.commands",
 
         permissions:
-          "36700160"
+          String(
+            permissions
+          ),
+
+        guild_id:
+          req.params.guildId
       }).toString();
 
     res.json({
-      url
+      invite
     });
   }
 );
 
 /* =========================
-   SETTINGS DEFAULTS
+   SETTINGS
 ========================= */
 
-const defaults = {
-  volume: 80,
+const defaultSettings = {
+  prefix:
+    "/",
 
-  maxQueue: 100,
+  defaultVolume:
+    80,
 
-  autoplay:
+  announceTracks:
+    true,
+
+  autoJoin:
     false,
 
-  twentyFourSeven:
-    false,
+  autoLeave:
+    true,
 
-  repeat:
-    "off",
+  maxQueue:
+    100,
 
-  djRoleId:
+  djRole:
     "",
 
-  musicChannelId:
-    "",
+  allowedChannels:
+    [],
 
-  logChannelId:
-    "",
-
-  embedColor:
-    "#8b5cf6",
-
-  nowPlayingTitle:
-    "Now Playing",
-
-  footerText:
-    "Aether Music",
-
-  language:
-    "en",
-
-  announceNowPlaying:
-    true,
-
-  deleteCommands:
-    false,
-
-  allowExternalLinks:
-    true,
-
-  sourceYouTube:
-    true,
-
-  sourceSoundCloud:
-    true,
-
-  sourceSpotify:
-    true,
-
-  sourceAppleMusic:
-    true,
-
-  sourceDeezer:
-    true,
-
-  sourceBandcamp:
-    true,
-
-  sourceTwitch:
-    true,
-
-  sourceVimeo:
-    true,
-
-  sourceRadio:
-    true,
-
-  sourceDirectUrl:
-    true,
-
-  requesterDisplay:
-    true,
-
-  showQueueButtons:
-    true,
-
-  allowPlaylists:
-    true,
-
-  allowSearch:
-    true,
-
-  defaultSearchSource:
-    "youtube",
-
-  minDjRole:
-    false,
-
-  logCommands:
-    true,
-
-  logPlayer:
-    true,
-
-  logJoins:
-    true,
-
-  enableAnalytics:
-    true
+  defaultRepeat:
+    "off"
 };
-/* =========================
-   SETTINGS GET
-========================= */
 
 app.get(
   "/api/guilds/:guildId/settings",
   guildAuth,
-  async (
-    req,
-    res
-  ) => {
+  async (req, res) => {
     try {
       const result =
         await db(
@@ -1282,17 +1530,18 @@ app.get(
           ]
         );
 
-      res.json({
-        ...defaults,
+      const config =
+        result.rows.length
+          ? result.rows[0].config
+          : {};
 
-        ...(result.rows[0]?.config ||
-          {})
+      res.json({
+        ...defaultSettings,
+        ...config
       });
-    } catch (
-      error
-    ) {
+    } catch (error) {
       console.error(
-        "Settings load error:",
+        "[Aether] Settings error:",
         error
       );
 
@@ -1300,54 +1549,33 @@ app.get(
         .status(500)
         .json({
           error:
-            "Could not load settings."
+            "Failed to load settings."
         });
     }
   }
 );
 
-/* =========================
-   SETTINGS UPDATE
-========================= */
-
 app.put(
   "/api/guilds/:guildId/settings",
   guildAuth,
-  async (
-    req,
-    res
-  ) => {
+  async (req, res) => {
     try {
-      const config =
-        {};
-
-      for (
-        const key of Object.keys(
-          defaults
-        )
-      ) {
-        if (
-          req.body[key] !==
-          undefined
-        ) {
-          config[key] =
-            req.body[key];
-        }
-      }
+      const config = {
+        ...defaultSettings,
+        ...(req.body || {})
+      };
 
       await db(
         `
         INSERT INTO guild_settings
-        (guild_id, guild_name, config)
-        VALUES ($1, $2, $3)
-        ON CONFLICT(guild_id)
+          (guild_id, guild_name, config)
+        VALUES
+          ($1, $2, $3)
+        ON CONFLICT (guild_id)
         DO UPDATE SET
-          guild_name =
-            EXCLUDED.guild_name,
-          config =
-            EXCLUDED.config,
-          updated_at =
-            NOW()
+          guild_name = EXCLUDED.guild_name,
+          config = EXCLUDED.config,
+          updated_at = NOW()
         `,
         [
           req.guild.id,
@@ -1356,34 +1584,16 @@ app.put(
         ]
       );
 
-      await db(
-        `
-        INSERT INTO audit_log
-        (guild_id, user_id, action, payload)
-        VALUES ($1, $2, $3, $4)
-        `,
-        [
-          req.guild.id,
-          req.session.user.id,
-          "settings.update",
-          config
-        ]
-      );
-
       res.json({
-        ok:
+        success:
           true,
 
-        settings: {
-          ...defaults,
-          ...config
-        }
+        settings:
+          config
       });
-    } catch (
-      error
-    ) {
+    } catch (error) {
       console.error(
-        "Settings update error:",
+        "[Aether] Settings save error:",
         error
       );
 
@@ -1391,12 +1601,11 @@ app.put(
         .status(500)
         .json({
           error:
-            "Could not save settings."
+            "Failed to save settings."
         });
     }
   }
 );
-
 /* =========================
    PLAYER STATE
 ========================= */
@@ -1404,16 +1613,29 @@ app.put(
 app.get(
   "/api/guilds/:guildId/player",
   guildAuth,
-  async (
-    req,
-    res
-  ) => {
+  async (req, res) => {
     try {
       const liveState =
-        musicManager.getState(req.guild.id);
+        musicManager.getState(
+          req.guild.id
+        );
 
       if (liveState) {
-        return res.json(liveState);
+        return res.json(
+          liveState
+        );
+      }
+
+      if (!pool) {
+        return res.json({
+          playing: false,
+          paused: false,
+          current: null,
+          queue: [],
+          volume: 80,
+          repeat: "off",
+          connected: false
+        });
       }
 
       const result =
@@ -1428,42 +1650,31 @@ app.get(
           ]
         );
 
-      return res.json(
-        result.rows[0]?.state ||
-          {
-            connected:
-              false,
+      if (result.rows.length) {
+        return res.json(
+          result.rows[0].state
+        );
+      }
 
-            playing:
-              false,
-
-            current:
-              null,
-
-            queue:
-              [],
-
-            volume:
-              80,
-
-            repeat:
-              "off"
-          }
-      );
-    } catch (
-      error
-    ) {
+      res.json({
+        playing: false,
+        paused: false,
+        current: null,
+        queue: [],
+        volume: 80,
+        repeat: "off",
+        connected: false
+      });
+    } catch (error) {
       console.error(
-        "Player state error:",
+        "[Aether] Player state error:",
         error
       );
 
-      res
-        .status(500)
-        .json({
-          error:
-            "Could not load player state."
-        });
+      res.status(500).json({
+        error:
+          "Failed to load player."
+      });
     }
   }
 );
@@ -1472,150 +1683,329 @@ app.get(
    PLAYER COMMANDS
 ========================= */
 
+const playerCommands =
+  new Set([
+    "join",
+    "play",
+    "pause",
+    "resume",
+    "skip",
+    "stop",
+    "shuffle",
+    "previous",
+    "disconnect",
+    "volume",
+    "repeat",
+    "clear"
+  ]);
+
 app.post(
   "/api/guilds/:guildId/player/:command",
   guildAuth,
-  async (
-    req,
-    res
-  ) => {
-    const allowed = [
-      "join",
-      "play",
-      "pause",
-      "resume",
-      "skip",
-      "stop",
-      "shuffle",
-      "previous",
-      "disconnect",
-      "volume",
-      "repeat",
-      "clear"
-    ];
-
+  async (req, res) => {
     const command =
-      req.params.command;
+      String(
+        req.params.command
+      );
 
     if (
-      !allowed.includes(
+      !playerCommands.has(
         command
       )
     ) {
-      return res
-        .status(400)
-        .json({
-          error:
-            "Unknown player command"
-        });
+      return res.status(400).json({
+        error:
+          "Unknown player command."
+      });
     }
 
     try {
       const payload =
         req.body || {};
 
-      await db(
-        `
-        INSERT INTO bot_commands
-        (guild_id, command, payload)
-        VALUES ($1, $2, $3)
-        `,
-        [
-          req.guild.id,
-          command,
-          payload
-        ]
-      );
-
-      await db(
-        `
-        INSERT INTO audit_log
-        (guild_id, user_id, action, payload)
-        VALUES ($1, $2, $3, $4)
-        `,
-        [
-          req.guild.id,
-          req.session.user.id,
-          "player." +
+      if (pool) {
+        await db(
+          `
+          INSERT INTO bot_commands
+            (guild_id, command, payload)
+          VALUES
+            ($1, $2, $3)
+          `,
+          [
+            req.guild.id,
             command,
+            payload
+          ]
+        );
+
+        await db(
+          `
+          INSERT INTO audit_log
+            (guild_id, user_id, action, payload)
+          VALUES
+            ($1, $2, $3, $4)
+          `,
+          [
+            req.guild.id,
+            req.session.user.id,
+            `player.${command}`,
+            payload
+          ]
+        );
+      }
+
+      const result =
+        await musicManager.handleCommand({
+          guildId:
+            req.guild.id,
+
+          command,
+
           payload
-        ]
-      );
+        });
+
+      const state =
+        musicManager.getState(
+          req.guild.id
+        );
+
+      if (pool && state) {
+        await db(
+          `
+          INSERT INTO player_state
+            (guild_id, state)
+          VALUES
+            ($1, $2)
+          ON CONFLICT (guild_id)
+          DO UPDATE SET
+            state = EXCLUDED.state,
+            updated_at = NOW()
+          `,
+          [
+            req.guild.id,
+            state
+          ]
+        );
+      }
 
       res.json({
-        ok:
-          true,
+        success: true,
 
-        queued:
-          true,
+        result,
 
-        command,
-
-        botOnline:
-          botReady,
-
-        botInstalled:
-          botIsInGuild(
-            req.guild.id
-          )
+        state:
+          state || null
       });
-    } catch (
-      error
-    ) {
+    } catch (error) {
       console.error(
-        "Player command error:",
+        "[Aether] Player command error:",
         error
       );
 
-      res
-        .status(500)
-        .json({
-          error:
-            "Could not queue player command."
-        });
+      res.status(400).json({
+        error:
+          error.message ||
+          "Player command failed."
+      });
     }
   }
 );
 
+/* =========================
+   ANALYTICS
+========================= */
+
+app.get(
+  "/api/guilds/:guildId/analytics",
+  guildAuth,
+  async (req, res) => {
+    try {
+      if (!pool) {
+        return res.json({
+          events: []
+        });
+      }
+
+      const days = Math.min(
+        Math.max(
+          Number(
+            req.query.days
+          ) || 30,
+          1
+        ),
+        90
+      );
+
+      const result =
+        await db(
+          `
+          SELECT
+            event_type,
+            COUNT(*)::int AS count
+          FROM analytics_events
+          WHERE guild_id = $1
+            AND created_at >=
+              NOW() -
+              ($2 * INTERVAL '1 day')
+          GROUP BY event_type
+          ORDER BY count DESC
+          `,
+          [
+            req.guild.id,
+            days
+          ]
+        );
+
+      res.json({
+        events:
+          result.rows
+      });
+    } catch (error) {
+      console.error(
+        "[Aether] Analytics error:",
+        error
+      );
+
+      res.status(500).json({
+        error:
+          "Failed to load analytics."
+      });
+    }
+  }
+);
 
 /* =========================
-   START AETHER
+   AUDIT LOG
+========================= */
+
+app.get(
+  "/api/guilds/:guildId/audit",
+  guildAuth,
+  async (req, res) => {
+    try {
+      if (!pool) {
+        return res.json({
+          entries: []
+        });
+      }
+
+      const result =
+        await db(
+          `
+          SELECT
+            id,
+            user_id,
+            action,
+            payload,
+            created_at
+          FROM audit_log
+          WHERE guild_id = $1
+          ORDER BY created_at DESC
+          LIMIT 100
+          `,
+          [
+            req.guild.id
+          ]
+        );
+
+      res.json({
+        entries:
+          result.rows
+      });
+    } catch (error) {
+      console.error(
+        "[Aether] Audit error:",
+        error
+      );
+
+      res.status(500).json({
+        error:
+          "Failed to load audit log."
+      });
+    }
+  }
+);
+/* =========================
+   DASHBOARD BRIDGE
+========================= */
+
+async function savePlayerState(
+  guildId
+) {
+  if (!pool) {
+    return;
+  }
+
+  const state =
+    musicManager.getState(
+      guildId
+    );
+
+  if (!state) {
+    return;
+  }
+
+  await db(
+    `
+    INSERT INTO player_state
+      (guild_id, state)
+    VALUES
+      ($1, $2)
+    ON CONFLICT (guild_id)
+    DO UPDATE SET
+      state = EXCLUDED.state,
+      updated_at = NOW()
+    `,
+    [
+      guildId,
+      state
+    ]
+  );
+}
+
+async function handleDashboardCommand({
+  guildId,
+  command,
+  payload
+}) {
+  const result =
+    await musicManager.handleCommand({
+      guildId,
+      command,
+      payload
+    });
+
+  await savePlayerState(
+    guildId
+  );
+
+  return result;
+}
+
+/* =========================
+   START SERVER
 ========================= */
 
 async function start() {
   try {
     await initializeDatabase();
 
-    if (pool) {
-      dashboardBridge = createAetherDashboardBridge({
-        databaseUrl: process.env.DATABASE_URL,
-        onCommand: async ({ guildId, command, payload }) => {
-          const result = await musicManager.handleCommand({
-            guildId,
-            command,
-            payload
-          });
+    if (
+      pool &&
+      !dashboardBridge
+    ) {
+      dashboardBridge =
+        createAetherDashboardBridge({
+          databaseUrl:
+            process.env.DATABASE_URL,
 
-          const liveState = musicManager.getState(guildId);
+          onCommand:
+            handleDashboardCommand
+        });
 
-          if (liveState) {
-            await db(
-              `
-              INSERT INTO player_state
-                (guild_id, state)
-              VALUES ($1, $2)
-              ON CONFLICT (guild_id)
-              DO UPDATE SET
-                state = EXCLUDED.state,
-                updated_at = NOW()
-              `,
-              [guildId, liveState]
-            );
-          }
-
-          return result;
-        }
-      });
+      console.log(
+        "[Aether] Dashboard bridge started."
+      );
     }
 
     app.listen(
@@ -1627,11 +2017,7 @@ async function start() {
         );
 
         console.log(
-          "AETHER DASHBOARD ONLINE"
-        );
-
-        console.log(
-          `Port: ${PORT}`
+          `Aether dashboard running on port ${PORT}`
         );
 
         console.log(
@@ -1649,7 +2035,7 @@ async function start() {
     );
   } catch (error) {
     console.error(
-      "Aether startup failed:",
+      "[Aether] Startup failed:",
       error
     );
 
@@ -1658,3 +2044,27 @@ async function start() {
 }
 
 start();
+
+/* =========================
+   PROCESS ERRORS
+========================= */
+
+process.on(
+  "unhandledRejection",
+  error => {
+    console.error(
+      "[Aether] Unhandled rejection:",
+      error
+    );
+  }
+);
+
+process.on(
+  "uncaughtException",
+  error => {
+    console.error(
+      "[Aether] Uncaught exception:",
+      error
+    );
+  }
+);
