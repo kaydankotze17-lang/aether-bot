@@ -29,61 +29,54 @@ export class AetherMusicManager {
         volume: 80,
         repeat: "off",
         textChannelId: null,
-        reconnecting: false
+        voiceChannelId: null,
+        reconnecting: false,
+        starting: false
       };
 
-      player.on(
-        AudioPlayerStatus.Idle,
-        async () => {
-          try {
-            await this.handleTrackEnd(guildId);
-          } catch (error) {
-            console.error(
-              `[AETHER MUSIC] Track-end error in ${guildId}:`,
-              error
-            );
-          }
-        }
-      );
+      player.on(AudioPlayerStatus.Playing, () => {
+        console.log(
+          `[AETHER MUSIC] Playing in ${guildId}: ${state.current?.title || "unknown"}`
+        );
+      });
 
-      player.on(
-        AudioPlayerStatus.Playing,
-        () => {
-          console.log(
-            `[AETHER MUSIC] Player started in ${guildId}`
-          );
-        }
-      );
+      player.on(AudioPlayerStatus.Paused, () => {
+        console.log(
+          `[AETHER MUSIC] Paused in ${guildId}`
+        );
+      });
 
-      player.on(
-        AudioPlayerStatus.Paused,
-        () => {
-          console.log(
-            `[AETHER MUSIC] Player paused in ${guildId}`
-          );
-        }
-      );
+      player.on(AudioPlayerStatus.Idle, async () => {
+        if (state.starting) return;
 
-      player.on(
-        "error",
-        async error => {
+        try {
+          await this.handleTrackEnd(guildId);
+        } catch (error) {
           console.error(
-            `[AETHER MUSIC] Player error in ${guildId}:`,
+            `[AETHER MUSIC] Track ended with error in ${guildId}:`,
             error
           );
-
-          state.current = null;
-
-          try {
-            await this.playNext(guildId);
-          } catch (nextError) {
-            console.error(
-              `[AETHER MUSIC] Failed to continue queue in ${guildId}:`,
-              nextError
-            );
-          }
         }
-      );
+      });
+
+      player.on("error", async error => {
+        console.error(
+          `[AETHER MUSIC] Audio player error in ${guildId}:`,
+          error
+        );
+
+        state.current = null;
+        state.starting = false;
+
+        try {
+          await this.playNext(guildId);
+        } catch (nextError) {
+          console.error(
+            `[AETHER MUSIC] Queue recovery failed in ${guildId}:`,
+            nextError
+          );
+        }
+      });
 
       this.players.set(guildId, state);
     }
@@ -97,78 +90,71 @@ export class AetherMusicManager {
     }
 
     if (!voiceChannelId) {
-      throw new Error(
-        "No voice channel was provided."
-      );
+      throw new Error("No voice channel was provided.");
     }
 
-    const channel =
-      guild.channels.cache.get(
-        String(voiceChannelId)
-      );
+    const channel = guild.channels.cache.get(
+      String(voiceChannelId)
+    );
 
     if (!channel) {
-      throw new Error(
-        "Voice channel not found."
-      );
+      throw new Error("Voice channel not found.");
     }
 
-    if (
-      channel.type !== 2 &&
-      channel.type !== 13
-    ) {
+    if (channel.type !== 2 && channel.type !== 13) {
       throw new Error(
         "The selected channel is not a voice channel."
       );
     }
 
-    const state =
-      this.getGuildPlayer(guild.id);
+    const state = this.getGuildPlayer(guild.id);
+    state.voiceChannelId = channel.id;
 
-    /*
-     * Reuse an existing healthy connection.
-     */
     if (state.connection) {
-      const status =
-        state.connection.state.status;
+      const status = state.connection.state.status;
 
-      if (
-        status === VoiceConnectionStatus.Ready ||
-        status === VoiceConnectionStatus.Connecting ||
-        status === VoiceConnectionStatus.Signalling
-      ) {
-        console.log(
-          `[AETHER MUSIC] Already connected to ${guild.name} / ${channel.name}`
-        );
-
+      if (status === VoiceConnectionStatus.Ready) {
+        state.connection.subscribe(state.player);
         return state.connection;
       }
 
-      try {
-        state.connection.destroy();
-      } catch {}
+      if (
+        status === VoiceConnectionStatus.Connecting ||
+        status === VoiceConnectionStatus.Signalling
+      ) {
+        try {
+          await entersState(
+            state.connection,
+            VoiceConnectionStatus.Ready,
+            10000
+          );
 
-      state.connection = null;
+          state.connection.subscribe(state.player);
+          return state.connection;
+        } catch {
+          try {
+            state.connection.destroy();
+          } catch {}
+
+          state.connection = null;
+        }
+      }
     }
 
     console.log(
       `[AETHER MUSIC] Connecting to ${guild.name} / ${channel.name}`
     );
 
-    const connection =
-      joinVoiceChannel({
-        channelId: channel.id,
-        guildId: guild.id,
-        adapterCreator:
-          guild.voiceAdapterCreator,
-        selfDeaf: true
-      });
+    const connection = joinVoiceChannel({
+      channelId: channel.id,
+      guildId: guild.id,
+      adapterCreator: guild.voiceAdapterCreator,
+      selfDeaf: true,
+      selfMute: false
+    });
 
     state.connection = connection;
-
-    connection.subscribe(
-      state.player
-    );
+    connection.subscribe(state.player);
 
     connection.on(
       VoiceConnectionStatus.Ready,
@@ -184,23 +170,20 @@ export class AetherMusicManager {
     connection.on(
       VoiceConnectionStatus.Disconnected,
       async () => {
-        console.warn(
-          `[AETHER MUSIC] Voice connection disconnected in ${guild.name}`
-        );
-
-        if (
-          state.connection !== connection
-        ) {
+        if (state.connection !== connection) {
           return;
         }
 
-        /*
-         * Discord voice connections can briefly disconnect
-         * while moving between signalling states.
-         *
-         * Give the connection a short opportunity to recover
-         * before destroying it.
-         */
+        console.warn(
+          `[AETHER MUSIC] Voice disconnected in ${guild.name}`
+        );
+
+        if (state.reconnecting) {
+          return;
+        }
+
+        state.reconnecting = true;
+
         try {
           await Promise.race([
             entersState(
@@ -208,7 +191,6 @@ export class AetherMusicManager {
               VoiceConnectionStatus.Signalling,
               5000
             ),
-
             entersState(
               connection,
               VoiceConnectionStatus.Connecting,
@@ -216,28 +198,32 @@ export class AetherMusicManager {
             )
           ]);
 
+          await entersState(
+            connection,
+            VoiceConnectionStatus.Ready,
+            10000
+          );
+
+          state.reconnecting = false;
+
           console.log(
-            `[AETHER MUSIC] Voice connection recovering in ${guild.name}`
+            `[AETHER MUSIC] Voice connection recovered in ${guild.name}`
+          );
+        } catch (error) {
+          console.error(
+            `[AETHER MUSIC] Voice recovery failed in ${guild.name}:`,
+            error
           );
 
-          return;
-        } catch {}
+          state.reconnecting = false;
 
-        /*
-         * If recovery failed, cleanly destroy the connection.
-         */
-        if (
-          state.connection === connection
-        ) {
-          try {
-            connection.destroy();
-          } catch {}
+          if (state.connection === connection) {
+            try {
+              connection.destroy();
+            } catch {}
 
-          state.connection = null;
-
-          console.warn(
-            `[AETHER MUSIC] Voice connection closed in ${guild.name}`
-          );
+            state.connection = null;
+          }
         }
       }
     );
@@ -245,9 +231,7 @@ export class AetherMusicManager {
     connection.on(
       VoiceConnectionStatus.Destroyed,
       () => {
-        if (
-          state.connection === connection
-        ) {
+        if (state.connection === connection) {
           state.connection = null;
         }
 
@@ -264,14 +248,7 @@ export class AetherMusicManager {
         15000
       );
     } catch (error) {
-      console.error(
-        `[AETHER MUSIC] Failed to establish voice connection in ${guild.name}:`,
-        error
-      );
-
-      if (
-        state.connection === connection
-      ) {
+      if (state.connection === connection) {
         state.connection = null;
       }
 
@@ -284,92 +261,61 @@ export class AetherMusicManager {
       );
     }
 
-    console.log(
-      `[AETHER MUSIC] Connected to ${guild.name} / ${channel.name}`
-    );
-
     return connection;
   }
 
   async search(query) {
-    const cleanQuery =
-      String(query || "").trim();
+    const cleanQuery = String(query || "").trim();
 
     if (!cleanQuery) {
-      throw new Error(
-        "Search query cannot be empty."
-      );
+      throw new Error("Search query cannot be empty.");
     }
 
     console.log(
-      `[AETHER MUSIC] Searching YouTube: ${cleanQuery}`
+      `[AETHER MUSIC] YouTube search: ${cleanQuery}`
     );
 
-    const results =
-      await play.search(
-        cleanQuery,
-        {
-          limit: 5,
-          source: {
-            youtube: "video"
-          }
+    const results = await play.search(
+      cleanQuery,
+      {
+        limit: 5,
+        source: {
+          youtube: "video"
         }
-      );
+      }
+    );
 
-    if (
-      !results ||
-      !results.length
-    ) {
+    if (!results?.length) {
       throw new Error(
         `No YouTube results found for "${cleanQuery}".`
       );
     }
 
-    const result =
-      results.find(
-        item =>
-          item &&
-          item.url
-      );
+    const result = results.find(
+      item => item?.url
+    );
 
     if (!result) {
       throw new Error(
-        `YouTube returned no playable result for "${cleanQuery}".`
+        `No playable YouTube result found for "${cleanQuery}".`
       );
     }
-
-    console.log(
-      `[AETHER MUSIC] Found: ${result.title || result.url}`
-    );
 
     return result;
   }
 
-  async createTrack(
-    query,
-    requester = null
-  ) {
-    const cleanQuery =
-      String(query || "").trim();
+  async createTrack(query, requester = null) {
+    const cleanQuery = String(query || "").trim();
 
     if (!cleanQuery) {
-      throw new Error(
-        "A track query is required."
-      );
+      throw new Error("A track query is required.");
     }
 
     let result;
 
-    /*
-     * Direct URL.
-     */
     if (
-      cleanQuery.startsWith(
-        "http://"
-      ) ||
-      cleanQuery.startsWith(
-        "https://"
-      )
+      cleanQuery.startsWith("http://") ||
+      cleanQuery.startsWith("https://")
     ) {
       result = {
         url: cleanQuery,
@@ -379,106 +325,73 @@ export class AetherMusicManager {
         thumbnails: []
       };
     } else {
-      result =
-        await this.search(
-          cleanQuery
-        );
+      result = await this.search(cleanQuery);
     }
 
     return {
       url: result.url,
-
-      title:
-        result.title ||
-        cleanQuery,
-
+      title: result.title || cleanQuery,
       duration:
         result.durationRaw ||
         result.durationInSec ||
         null,
-
       thumbnail:
         result.thumbnails?.[0]?.url ||
         result.thumbnail ||
         null,
-
       requester
     };
   }
 
-  async playTrack(
-    state,
-    track
-  ) {
+  async playTrack(state, track) {
     if (!state) {
-      throw new Error(
-        "Player state not found."
-      );
+      throw new Error("Player state not found.");
     }
 
     if (!state.connection) {
       throw new Error(
-        "The bot is not connected to a voice channel."
+        "Aether is not connected to a voice channel."
       );
     }
 
-    const connectionStatus =
-      state.connection.state.status;
-
     if (
-      connectionStatus !==
+      state.connection.state.status !==
       VoiceConnectionStatus.Ready
     ) {
       throw new Error(
-        `Voice connection is not ready. Current state: ${connectionStatus}`
+        `Voice connection is not ready: ${state.connection.state.status}`
       );
     }
 
     if (!track?.url) {
-      throw new Error(
-        "Track has no playable URL."
-      );
+      throw new Error("Track has no playable URL.");
     }
+
+    state.starting = true;
 
     console.log(
-      `[AETHER MUSIC] Loading: ${track.title}`
+      `[AETHER MUSIC] Creating stream: ${track.title}`
     );
 
-    let stream;
-
     try {
-      stream =
-        await play.stream(
-          track.url,
-          {
-            quality: 2,
-            discordPlayerCompatibility:
-              true
-          }
+      const stream = await play.stream(
+        track.url,
+        {
+          quality: 2,
+          discordPlayerCompatibility: true
+        }
+      );
+
+      if (!stream?.stream) {
+        throw new Error(
+          "The music source returned no audio stream."
         );
-    } catch (error) {
-      console.error(
-        `[AETHER MUSIC] Stream creation failed for "${track.title}":`,
-        error
-      );
+      }
 
-      throw new Error(
-        `Could not create audio stream: ${error.message}`
-      );
-    }
+      const inputType =
+        stream.type || StreamType.WebmOpus;
 
-    if (!stream?.stream) {
-      throw new Error(
-        "YouTube returned an empty audio stream."
-      );
-    }
-
-    const inputType =
-      stream.type ||
-      StreamType.WebmOpus;
-
-    const resource =
-      createAudioResource(
+      const resource = createAudioResource(
         stream.stream,
         {
           inputType,
@@ -486,48 +399,58 @@ export class AetherMusicManager {
         }
       );
 
-    if (resource.volume) {
-      resource.volume.setVolume(
-        Math.max(
-          0,
-          Math.min(
-            100,
-            Number(state.volume) || 0
-          )
-        ) / 100
+      if (resource.volume) {
+        resource.volume.setVolume(
+          Math.max(
+            0,
+            Math.min(
+              100,
+              Number(state.volume) || 0
+            )
+          ) / 100
+        );
+      }
+
+      state.current = track;
+
+      state.player.play(resource);
+
+      await entersState(
+        state.player,
+        AudioPlayerStatus.Playing,
+        10000
+      );
+
+      state.starting = false;
+
+      console.log(
+        `[AETHER MUSIC] Audio started: ${track.title}`
+      );
+
+      return resource;
+    } catch (error) {
+      state.starting = false;
+      state.current = null;
+
+      console.error(
+        `[AETHER MUSIC] Playback failed for "${track.title}":`,
+        error
+      );
+
+      throw new Error(
+        `Playback failed: ${error.message}`
       );
     }
-
-    state.current = track;
-
-    state.player.play(
-      resource
-    );
-
-    console.log(
-      `[AETHER MUSIC] Playing: ${track.title}`
-    );
-
-    return resource;
   }
 
   async playNext(guildId) {
-    const state =
-      this.getGuildPlayer(
-        guildId
-      );
+    const state = this.getGuildPlayer(guildId);
 
     if (!state.connection) {
       state.current = null;
-
-      throw new Error(
-        "The bot is not connected to a voice channel."
-      );
+      return null;
     }
 
-    /*
-     * Repeat current track.
-     */
     if (
       state.repeat === "track" &&
       state.current
@@ -538,11 +461,7 @@ export class AetherMusicManager {
       );
     }
 
-    /*
-     * Get next track.
-     */
-    const next =
-      state.queue.shift();
+    const next = state.queue.shift();
 
     if (!next) {
       state.current = null;
@@ -561,57 +480,27 @@ export class AetherMusicManager {
       );
     } catch (error) {
       console.error(
-        `[AETHER MUSIC] Failed to play "${next.title}":`,
+        `[AETHER MUSIC] Skipping failed track "${next.title}":`,
         error
       );
 
       state.current = null;
 
-      /*
-       * Skip the broken track and continue.
-       */
-      if (
-        state.queue.length > 0
-      ) {
-        console.log(
-          `[AETHER MUSIC] Skipping failed track and continuing queue in ${guildId}`
-        );
-
-        return this.playNext(
-          guildId
-        );
+      if (state.queue.length) {
+        return this.playNext(guildId);
       }
 
       throw error;
     }
   }
 
-  async handleTrackEnd(
-    guildId
-  ) {
-    const state =
-      this.players.get(
-        guildId
-      );
+  async handleTrackEnd(guildId) {
+    const state = this.players.get(guildId);
 
     if (!state) {
       return;
     }
 
-    /*
-     * Ignore idle events when there is no current
-     * track and no queue.
-     */
-    if (
-      !state.current &&
-      !state.queue.length
-    ) {
-      return;
-    }
-
-    /*
-     * Repeat one track.
-     */
     if (
       state.repeat === "track" &&
       state.current
@@ -630,45 +519,28 @@ export class AetherMusicManager {
         state.current = null;
 
         try {
-          await this.playNext(
-            guildId
-          );
-        } catch (nextError) {
-          console.error(
-            `[AETHER MUSIC] Failed after repeat error in ${guildId}:`,
-            nextError
-          );
-        }
+          await this.playNext(guildId);
+        } catch {}
       }
 
       return;
     }
 
-    const finished =
-      state.current;
+    const finished = state.current;
+    state.current = null;
 
-    /*
-     * Repeat queue means put the finished
-     * track back at the end.
-     */
     if (
       state.repeat === "queue" &&
       finished
     ) {
-      state.queue.push(
-        finished
-      );
+      state.queue.push(finished);
     }
 
-    state.current = null;
-
     try {
-      await this.playNext(
-        guildId
-      );
+      await this.playNext(guildId);
     } catch (error) {
       console.error(
-        `[AETHER MUSIC] Next track failed in ${guildId}:`,
+        `[AETHER MUSIC] Could not play next track in ${guildId}:`,
         error
       );
     }
@@ -679,178 +551,152 @@ export class AetherMusicManager {
     command,
     payload = {}
   }) {
-    const guild =
-      this.client.guilds.cache.get(
-        String(guildId)
-      );
+    const state = this.getGuildPlayer(guildId);
+
+    const guild = this.client.guilds.cache.get(
+      guildId
+    );
 
     if (!guild) {
-      throw new Error(
-        "Aether is not installed in this server."
-      );
+      throw new Error("Bot is not in this server.");
     }
-
-    const state =
-      this.getGuildPlayer(
-        guildId
-      );
 
     switch (command) {
       case "join": {
-        if (
-          !payload.voiceChannelId
-        ) {
-          throw new Error(
-            "Select a voice channel first."
-          );
-        }
+        const channelId =
+          payload.channelId ||
+          payload.channel ||
+          payload.voiceChannelId;
 
         await this.connect(
           guild,
-          payload.voiceChannelId
+          channelId
         );
 
         return {
-          ok: true,
-          action: "join",
-          connected: true,
-          state:
-            this.getState(
-              guildId
-            )
+          message: "Connected to the voice channel.",
+          connected: true
         };
       }
 
       case "play": {
         const query =
-          String(
-            payload.query ||
-            payload.url ||
-            ""
-          ).trim();
+          payload.query ||
+          payload.url ||
+          payload.song;
 
         if (!query) {
           throw new Error(
-            "Play requires a query or URL."
+            "Enter a song name or YouTube URL."
           );
         }
 
-        /*
-         * Website can send a voice channel
-         * together with the play command.
-         */
+        const channelId =
+          payload.channelId ||
+          payload.voiceChannelId ||
+          payload.channel;
+
         if (
-          payload.voiceChannelId
+          channelId &&
+          (
+            !state.connection ||
+            state.voiceChannelId !== String(channelId)
+          )
         ) {
           await this.connect(
             guild,
-            payload.voiceChannelId
+            channelId
           );
         }
 
-        if (
-          !state.connection
-        ) {
+        if (!state.connection) {
           throw new Error(
-            "A voice channel is required."
+            "Join a voice channel before playing music."
           );
         }
 
         const track =
           await this.createTrack(
             query,
-            payload.requester ||
-              null
+            payload.requester || null
           );
 
-        const wasPlaying =
-          Boolean(
-            state.current
-          );
+        state.queue.push(track);
 
-        state.queue.push(
-          track
-        );
-
-        console.log(
-          `[AETHER MUSIC] Queued: ${track.title}`
-        );
-
-        if (!wasPlaying) {
-          await this.playNext(
-            guildId
-          );
+        if (
+          !state.current &&
+          state.player.state.status !==
+          AudioPlayerStatus.Playing
+        ) {
+          await this.playNext(guildId);
         }
 
         return {
-          ok: true,
-          action: "play",
+          message:
+            state.current?.url === track.url
+              ? `Now playing: ${track.title}`
+              : `Added to queue: ${track.title}`,
           track,
-          queueLength:
-            state.queue.length
+          queueLength: state.queue.length,
+          playing: Boolean(state.current)
         };
       }
 
       case "pause": {
         if (
-          !state.connection
+          state.player.state.status !==
+          AudioPlayerStatus.Playing
         ) {
           throw new Error(
-            "The bot is not connected."
+            "Nothing is currently playing."
           );
         }
 
         state.player.pause();
 
         return {
-          ok: true,
-          action: "pause"
+          message: "Playback paused."
         };
       }
 
       case "resume": {
         if (
-          !state.connection
+          state.player.state.status !==
+          AudioPlayerStatus.Paused
         ) {
           throw new Error(
-            "The bot is not connected."
+            "Playback is not paused."
           );
         }
 
         state.player.unpause();
 
         return {
-          ok: true,
-          action: "resume"
+          message: "Playback resumed."
         };
       }
 
       case "skip": {
-        if (
-          !state.connection
-        ) {
+        if (!state.current && !state.queue.length) {
           throw new Error(
-            "The bot is not connected."
+            "There is nothing to skip."
           );
         }
 
-        state.player.stop();
+        state.player.stop(true);
 
         return {
-          ok: true,
-          action: "skip"
+          message: "Skipped."
         };
       }
 
       case "stop": {
         state.queue = [];
         state.current = null;
-
-        state.player.stop();
+        state.player.stop(true);
 
         return {
-          ok: true,
-          action: "stop"
+          message: "Playback stopped and queue cleared."
         };
       }
 
@@ -858,23 +704,19 @@ export class AetherMusicManager {
         state.queue = [];
 
         return {
-          ok: true,
-          action: "clear",
-          queueLength: 0
+          message: "Queue cleared."
         };
       }
 
       case "shuffle": {
         for (
-          let i =
-            state.queue.length - 1;
+          let i = state.queue.length - 1;
           i > 0;
           i--
         ) {
           const j =
             Math.floor(
-              Math.random() *
-              (i + 1)
+              Math.random() * (i + 1)
             );
 
           [
@@ -887,28 +729,22 @@ export class AetherMusicManager {
         }
 
         return {
-          ok: true,
-          action: "shuffle",
-          queueLength:
-            state.queue.length
+          message: "Queue shuffled."
         };
       }
 
       case "previous": {
         throw new Error(
-          "Previous is not available until track history is enabled."
+          "Previous track is not available yet."
         );
       }
 
       case "disconnect": {
         state.queue = [];
         state.current = null;
+        state.player.stop(true);
 
-        state.player.stop();
-
-        if (
-          state.connection
-        ) {
+        if (state.connection) {
           try {
             state.connection.destroy();
           } catch {}
@@ -916,38 +752,34 @@ export class AetherMusicManager {
           state.connection = null;
         }
 
+        state.voiceChannelId = null;
+
         return {
-          ok: true,
-          action: "disconnect",
-          connected: false
+          message: "Disconnected from voice."
         };
       }
 
       case "volume": {
-        const volume =
-          Number(
-            payload.volume
-          );
+        const amount = Number(
+          payload.amount ??
+          payload.volume
+        );
 
         if (
-          !Number.isFinite(
-            volume
-          ) ||
-          volume < 0 ||
-          volume > 100
+          !Number.isFinite(amount) ||
+          amount < 0 ||
+          amount > 100
         ) {
           throw new Error(
             "Volume must be between 0 and 100."
           );
         }
 
-        state.volume =
-          volume;
+        state.volume = amount;
 
         return {
-          ok: true,
-          action: "volume",
-          volume
+          message: `Volume set to ${amount}%.`,
+          volume: amount
         };
       }
 
@@ -967,44 +799,30 @@ export class AetherMusicManager {
           ].includes(mode)
         ) {
           throw new Error(
-            "Repeat mode must be off, track, or queue."
+            "Repeat must be off, track, or queue."
           );
         }
 
-        state.repeat =
-          mode;
+        state.repeat = mode;
 
         return {
-          ok: true,
-          action: "repeat",
+          message: `Repeat mode: ${mode}.`,
           repeat: mode
         };
       }
 
       default:
         throw new Error(
-          `Unsupported music command: ${command}`
+          `Unknown music command: ${command}`
         );
     }
   }
 
   getState(guildId) {
-    const state =
-      this.players.get(
-        guildId
-      );
+    const state = this.players.get(guildId);
 
     if (!state) {
-      return {
-        guildId,
-        playing: false,
-        paused: false,
-        current: null,
-        queue: [],
-        volume: 80,
-        repeat: "off",
-        connected: false
-      };
+      return null;
     }
 
     const playerStatus =
@@ -1012,33 +830,24 @@ export class AetherMusicManager {
 
     return {
       guildId,
-
       playing:
         playerStatus ===
         AudioPlayerStatus.Playing,
-
       paused:
         playerStatus ===
         AudioPlayerStatus.Paused,
-
-      current:
-        state.current,
-
-      queue:
-        state.queue,
-
-      volume:
-        state.volume,
-
-      repeat:
-        state.repeat,
-
-      connected:
-        Boolean(
-          state.connection &&
-          state.connection.state.status ===
-            VoiceConnectionStatus.Ready
-        )
+      current: state.current,
+      queue: state.queue,
+      volume: state.volume,
+      repeat: state.repeat,
+      connected: Boolean(
+        state.connection &&
+        state.connection.state.status ===
+        VoiceConnectionStatus.Ready
+      ),
+      voiceChannelId:
+        state.voiceChannelId,
+      playerStatus
     };
   }
 }

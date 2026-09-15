@@ -1271,12 +1271,17 @@ function getBotGuilds() {
   }));
 }
 
-function botIsInGuild(
-  guildId
-) {
-  return discordClient.guilds.cache.has(
-    String(guildId)
-  );
+async function botIsInGuild(guildId) {
+  if (!botReady || !discordClient.user) {
+    return false;
+  }
+
+  try {
+    const guild = await discordClient.guilds.fetch(String(guildId));
+    return Boolean(guild);
+  } catch {
+    return false;
+  }
 }
 
 /* =========================
@@ -1326,21 +1331,14 @@ app.get(
 app.get(
   "/api/guilds/:guildId/bot",
   guildAuth,
-  (req, res) => {
-    const guildId =
-      String(
-        req.params.guildId
-      );
+  async (req, res) => {
+    const guildId = String(req.params.guildId);
+    const installed = await botIsInGuild(guildId);
 
     res.json({
       guildId,
-
       botReady,
-
-      installed:
-        botIsInGuild(
-          guildId
-        )
+      installed
     });
   }
 );
@@ -1724,20 +1722,6 @@ app.post(
         req.body || {};
 
       if (pool) {
-        await db(
-          `
-          INSERT INTO bot_commands
-            (guild_id, command, payload)
-          VALUES
-            ($1, $2, $3)
-          `,
-          [
-            req.guild.id,
-            command,
-            payload
-          ]
-        );
-
         await db(
           `
           INSERT INTO audit_log
