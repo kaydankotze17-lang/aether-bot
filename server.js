@@ -8,18 +8,17 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   Client,
-  GatewayIntentBits
+  GatewayIntentBits,
+  Partials
 } from "discord.js";
 
-const __dirname = path.dirname(
-  fileURLToPath(import.meta.url)
-);
+const __dirname =
+  path.dirname(fileURLToPath(import.meta.url));
 
 const app = express();
 
-const PORT = Number(
-  process.env.PORT || 3000
-);
+const PORT =
+  Number(process.env.PORT || 3000);
 
 const isProduction =
   process.env.NODE_ENV === "production" ||
@@ -29,34 +28,31 @@ const isProduction =
    DISCORD BOT
 ========================= */
 
-const discordClient = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildVoiceStates
-  ]
-});
+const discordClient =
+  new Client({
+    intents: [
+      GatewayIntentBits.Guilds,
+      GatewayIntentBits.GuildMembers,
+      GatewayIntentBits.GuildVoiceStates
+    ],
+    partials: [
+      Partials.GuildMember
+    ]
+  });
 
 let botReady = false;
-let botUser = null;
-let botLoginError = null;
 
 discordClient.once(
-  "ready",
+  "clientReady",
   client => {
     botReady = true;
-    botLoginError = null;
-    botUser = client.user;
 
     console.log(
-      "================================"
+      "================================="
     );
 
     console.log(
-      "AETHER DISCORD BOT ONLINE"
-    );
-
-    console.log(
-      `Logged in as: ${client.user.tag}`
+      `Aether is ONLINE as ${client.user.tag}`
     );
 
     console.log(
@@ -68,33 +64,7 @@ discordClient.once(
     );
 
     console.log(
-      "================================"
-    );
-  }
-);
-
-discordClient.on(
-  "guildCreate",
-  guild => {
-    console.log(
-      `Bot joined server: ${guild.name} (${guild.id})`
-    );
-
-    console.log(
-      `Current bot servers: ${discordClient.guilds.cache.size}`
-    );
-  }
-);
-
-discordClient.on(
-  "guildDelete",
-  guild => {
-    console.log(
-      `Bot left server: ${guild.name} (${guild.id})`
-    );
-
-    console.log(
-      `Current bot servers: ${discordClient.guilds.cache.size}`
+      "================================="
     );
   }
 );
@@ -110,6 +80,16 @@ discordClient.on(
 );
 
 discordClient.on(
+  "warn",
+  warning => {
+    console.warn(
+      "Discord warning:",
+      warning
+    );
+  }
+);
+
+discordClient.on(
   "shardError",
   error => {
     console.error(
@@ -119,54 +99,40 @@ discordClient.on(
   }
 );
 
-async function startDiscordBot() {
-  if (!process.env.DISCORD_TOKEN) {
-    botLoginError =
-      "DISCORD_TOKEN is not configured.";
-
+if (!process.env.DISCORD_TOKEN) {
+  console.error(
+    "DISCORD_TOKEN is missing."
+  );
+} else {
+  discordClient.login(
+    process.env.DISCORD_TOKEN
+  ).catch(error => {
     console.error(
-      "AETHER BOT ERROR: DISCORD_TOKEN is missing."
-    );
-
-    return;
-  }
-
-  try {
-    console.log(
-      "Starting Aether Discord bot..."
-    );
-
-    await discordClient.login(
-      process.env.DISCORD_TOKEN
-    );
-  } catch (error) {
-    botLoginError =
-      error?.message ||
-      "Discord bot login failed.";
-
-    console.error(
-      "Aether Discord bot login failed:",
+      "Failed to login to Discord:",
       error
     );
-  }
+  });
 }
 
 /* =========================
    DATABASE
 ========================= */
 
-const pool = process.env.DATABASE_URL
-  ? new pg.Pool({
-      connectionString:
-        process.env.DATABASE_URL,
+const pool =
+  process.env.DATABASE_URL
+    ? new pg.Pool({
+        connectionString:
+          process.env.DATABASE_URL,
 
-      ssl: isProduction
-        ? {
-            rejectUnauthorized: false
-          }
-        : false
-    })
-  : null;
+        ssl:
+          isProduction
+            ? {
+                rejectUnauthorized:
+                  false
+              }
+            : false
+      })
+    : null;
 
 app.set(
   "trust proxy",
@@ -179,14 +145,16 @@ app.use(
   })
 );
 
-const Store = pgSession(session);
+const Store =
+  pgSession(session);
 
 app.use(
   session({
     store: pool
       ? new Store({
           pool,
-          createTableIfMissing: true
+          createTableIfMissing:
+            true
         })
       : undefined,
 
@@ -198,129 +166,126 @@ app.use(
 
     resave: false,
 
-    saveUninitialized: false,
+    saveUninitialized:
+      false,
 
     proxy: true,
 
     cookie: {
       httpOnly: true,
-      secure: isProduction,
+
+      secure:
+        isProduction,
+
       sameSite: "lax",
+
       maxAge:
         7 * 86400000
     }
   })
 );
-
 /* =========================
    DATABASE HELPERS
 ========================= */
 
-async function db(
-  text,
-  params = []
-) {
+async function db(sql, params = []) {
   if (!pool) {
     throw new Error(
-      "DATABASE_URL is not configured."
+      "DATABASE_URL is required for persistent dashboard data"
     );
   }
 
-  return pool.query(
-    text,
-    params
-  );
+  return pool.query(sql, params);
 }
 
 async function initializeDatabase() {
   if (!pool) {
     console.warn(
-      "DATABASE_URL is missing. Database features are disabled."
+      "DATABASE_URL is not configured."
     );
 
     return;
   }
 
-  try {
-    await db(`
-      CREATE TABLE IF NOT EXISTS bot_settings (
-        guild_id TEXT PRIMARY KEY,
-        settings JSONB NOT NULL DEFAULT '{}'::jsonb,
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )
-    `);
+  console.log(
+    "Initializing Aether database..."
+  );
 
-    await db(`
-      CREATE TABLE IF NOT EXISTS bot_commands (
-        id BIGSERIAL PRIMARY KEY,
-        guild_id TEXT NOT NULL,
-        user_id TEXT NOT NULL,
-        command TEXT NOT NULL,
-        payload JSONB NOT NULL DEFAULT '{}'::jsonb,
-        status TEXT NOT NULL DEFAULT 'queued',
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )
-    `);
+  await db(`
+    CREATE TABLE IF NOT EXISTS guild_settings (
+      guild_id TEXT PRIMARY KEY,
+      guild_name TEXT NOT NULL,
+      config JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
 
-    await db(`
-      CREATE TABLE IF NOT EXISTS analytics_events (
-        id BIGSERIAL PRIMARY KEY,
-        guild_id TEXT,
-        user_id TEXT,
-        event TEXT NOT NULL,
-        metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )
-    `);
+  await db(`
+    CREATE TABLE IF NOT EXISTS player_state (
+      guild_id TEXT PRIMARY KEY,
+      state JSONB NOT NULL DEFAULT '{}'::jsonb,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
 
-    await db(`
-      CREATE TABLE IF NOT EXISTS audit_logs (
-        id BIGSERIAL PRIMARY KEY,
-        guild_id TEXT,
-        user_id TEXT,
-        action TEXT NOT NULL,
-        metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )
-    `);
+  await db(`
+    CREATE TABLE IF NOT EXISTS bot_commands (
+      id BIGSERIAL PRIMARY KEY,
+      guild_id TEXT NOT NULL,
+      command TEXT NOT NULL,
+      payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+      status TEXT NOT NULL DEFAULT 'pending',
+      result JSONB,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      processed_at TIMESTAMPTZ
+    )
+  `);
 
-    console.log(
-      "Database initialized successfully."
-    );
-  } catch (error) {
-    console.error(
-      "Database initialization failed:",
-      error
-    );
-  }
+  await db(`
+    CREATE TABLE IF NOT EXISTS analytics_events (
+      id BIGSERIAL PRIMARY KEY,
+      guild_id TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  await db(`
+    CREATE TABLE IF NOT EXISTS audit_log (
+      id BIGSERIAL PRIMARY KEY,
+      guild_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      action TEXT NOT NULL,
+      payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  console.log(
+    "Aether database tables initialized successfully."
+  );
 }
 
 /* =========================
-   DISCORD REST
+   DISCORD API
 ========================= */
 
 async function discord(
-  endpoint,
+  pathname,
   options = {}
 ) {
-  const token =
-    process.env.DISCORD_TOKEN;
-
-  if (!token) {
-    throw new Error(
-      "DISCORD_TOKEN is not configured."
-    );
-  }
-
   const response =
     await fetch(
-      `https://discord.com/api/v10${endpoint}`,
+      "https://discord.com/api/v10" +
+        pathname,
       {
         ...options,
 
         headers: {
-          Authorization:
-            `Bot ${token}`,
+          "User-Agent":
+            "AetherDashboard/2.0",
 
           "Content-Type":
             "application/json",
@@ -333,12 +298,10 @@ async function discord(
   const text =
     await response.text();
 
-  let data = null;
+  let data;
 
   try {
-    data = text
-      ? JSON.parse(text)
-      : null;
+    data = JSON.parse(text);
   } catch {
     data = text;
   }
@@ -346,13 +309,15 @@ async function discord(
   if (!response.ok) {
     const error =
       new Error(
-        `Discord API ${response.status}`
+        "Discord API " +
+          response.status
       );
 
     error.status =
       response.status;
 
-    error.data = data;
+    error.data =
+      data;
 
     throw error;
   }
@@ -360,30 +325,30 @@ async function discord(
   return data;
 }
 
-async function botDiscord(
-  endpoint,
-  options = {}
-) {
-  return discord(
-    endpoint,
-    options
-  );
-}
-
 /* =========================
-   LIVE BOT GUILDS
+   BOT STATUS
 ========================= */
 
-function getLiveBotGuilds() {
+function getBotGuilds() {
+  if (!botReady) {
+    return [];
+  }
+
   return Array.from(
     discordClient.guilds.cache.values()
-  );
+  ).map(guild => ({
+    id: guild.id,
+    name: guild.name,
+    icon: guild.icon
+      ? `https://cdn.discordapp.com/icons/${guild.id}/${guild.icon}.png`
+      : null
+  }));
 }
 
 function botIsInGuild(
   guildId
 ) {
-  if (!guildId) {
+  if (!botReady) {
     return false;
   }
 
@@ -396,37 +361,28 @@ function botIsInGuild(
    PERMISSIONS
 ========================= */
 
-function manageable(
-  guild
-) {
-  if (!guild) {
-    return false;
-  }
-
+function manageable(guild) {
   const permissions =
     BigInt(
-      guild.permissions ??
-      "0"
+      guild.permissions ||
+        "0"
     );
 
-  const ADMINISTRATOR =
-    0x8n;
-
-  const MANAGE_GUILD =
-    0x20n;
-
-  return Boolean(
-    permissions &
-    ADMINISTRATOR
-  ) ||
-  Boolean(
-    permissions &
-    MANAGE_GUILD
+  return (
+    !!guild.owner ||
+    !!(
+      permissions &
+      (1n << 3n)
+    ) ||
+    !!(
+      permissions &
+      (1n << 5n)
+    )
   );
 }
 
 /* =========================
-   AUTH
+   AUTH MIDDLEWARE
 ========================= */
 
 function auth(
@@ -434,7 +390,7 @@ function auth(
   res,
   next
 ) {
-  if (!req.session?.user) {
+  if (!req.session.user) {
     return res
       .status(401)
       .json({
@@ -446,12 +402,12 @@ function auth(
   next();
 }
 
-function guildAuth(
+async function guildAuth(
   req,
   res,
   next
 ) {
-  if (!req.session?.user) {
+  if (!req.session.user) {
     return res
       .status(401)
       .json({
@@ -462,38 +418,28 @@ function guildAuth(
 
   const guildId =
     String(
-      req.params.guildId ||
-      req.body?.guildId ||
-      req.query?.guildId ||
-      ""
+      req.params.guildId
     );
 
-  if (!guildId) {
-    return res
-      .status(400)
-      .json({
-        error:
-          "Guild ID is required"
-      });
-  }
-
-  const manageableGuilds =
-    req.session.user.guilds ||
-    [];
-
   const guild =
-    manageableGuilds.find(
-      item =>
-        String(item.id) ===
+    (
+      req.session.guilds ||
+      []
+    ).find(
+      guild =>
+        guild.id ===
         guildId
     );
 
-  if (!guild) {
+  if (
+    !guild ||
+    !manageable(guild)
+  ) {
     return res
       .status(403)
       .json({
         error:
-          "You do not have access to this server."
+          "You cannot manage this server."
       });
   }
 
@@ -504,82 +450,40 @@ function guildAuth(
 }
 
 /* =========================
-   DISCORD OAUTH
+   OAUTH URL
 ========================= */
 
 function oauth() {
-  const clientId =
-    process.env.DISCORD_CLIENT_ID;
-
-  const redirectUri =
-    process.env.DISCORD_OAUTH_REDIRECT_URI;
-
-  const params =
+  return (
+    "https://discord.com/oauth2/authorize?" +
     new URLSearchParams({
       client_id:
-        clientId,
+        process.env
+          .DISCORD_OAUTH_CLIENT_ID ||
+        process.env
+          .DISCORD_CLIENT_ID ||
+        "",
 
       redirect_uri:
-        redirectUri,
+        process.env
+          .DISCORD_OAUTH_REDIRECT_URI ||
+        "",
 
       response_type:
         "code",
 
       scope:
         "identify guilds"
-    });
-
-  return (
-    "https://discord.com/oauth2/authorize?" +
-    params.toString()
+    }).toString()
   );
 }
-
-/* =========================
-   DEFAULT SETTINGS
-========================= */
-
-const defaults = {
-  prefix: "/",
-
-  volume: 80,
-
-  defaultVolume: 80,
-
-  autoplay: true,
-
-  loop: "off",
-
-  announceNowPlaying: true,
-
-  deleteCommands: false,
-
-  djOnly: false,
-
-  twentyFourSeven: false,
-
-  defaultFilter: "none",
-
-  defaultSource: "youtube",
-
-  maxQueueSize: 100,
-
-  leaveOnEmpty: true,
-
-  leaveOnEmptyDelay: 300000,
-
-  inactivityTimeout: 600000,
-
-  embedColor: "#5865F2"
-};
-
 /* =========================
    LOGIN
 ========================= */
 
 app.get(
   "/auth/discord",
-  (req, res) => {
+  (_, res) => {
     res.redirect(
       oauth()
     );
@@ -592,177 +496,182 @@ app.get(
 
 app.get(
   "/auth/discord/callback",
-  async (req, res) => {
-    const code =
-      String(
-        req.query.code || ""
-      );
-
-    if (!code) {
-      return res
-        .status(400)
-        .send(
-          "Missing Discord authorization code."
-        );
-    }
-
+  async (
+    req,
+    res
+  ) => {
     try {
+      if (!req.query.code) {
+        return res
+          .status(400)
+          .send(
+            "Missing OAuth code."
+          );
+      }
+
+      const body =
+        new URLSearchParams({
+          client_id:
+            process.env
+              .DISCORD_OAUTH_CLIENT_ID ||
+            process.env
+              .DISCORD_CLIENT_ID ||
+            "",
+
+          client_secret:
+            process.env
+              .DISCORD_OAUTH_CLIENT_SECRET ||
+            "",
+
+          grant_type:
+            "authorization_code",
+
+          code:
+            String(
+              req.query.code
+            ),
+
+          redirect_uri:
+            process.env
+              .DISCORD_OAUTH_REDIRECT_URI ||
+            ""
+        });
+
       const tokenResponse =
         await fetch(
-          "https://discord.com/api/oauth2/token",
+          "https://discord.com/api/v10/oauth2/token",
           {
-            method: "POST",
+            method:
+              "POST",
 
             headers: {
               "Content-Type":
                 "application/x-www-form-urlencoded"
             },
 
-            body:
-              new URLSearchParams({
-                client_id:
-                  process.env.DISCORD_CLIENT_ID,
-
-                client_secret:
-                  process.env.DISCORD_OAUTH_CLIENT_SECRET,
-
-                grant_type:
-                  "authorization_code",
-
-                code,
-
-                redirect_uri:
-                  process.env.DISCORD_OAUTH_REDIRECT_URI
-              })
+            body
           }
         );
 
-      const tokenData =
+      if (
+        !tokenResponse.ok
+      ) {
+        const errorText =
+          await tokenResponse.text();
+
+        console.error(
+          "Discord OAuth token exchange failed:",
+          errorText
+        );
+
+        throw new Error(
+          "OAuth exchange failed"
+        );
+      }
+
+      const token =
         await tokenResponse.json();
 
       if (
-        !tokenResponse.ok ||
-        !tokenData.access_token
+        !token.access_token
       ) {
-        console.error(
-          "Discord OAuth token exchange failed:",
-          tokenData
+        throw new Error(
+          "Discord did not return an access token"
         );
-
-        return res
-          .status(401)
-          .send(
-            "Discord authorization failed."
-          );
       }
 
-      const accessToken =
-        tokenData.access_token;
-
-      const userResponse =
-        await fetch(
-          "https://discord.com/api/v10/users/@me",
-          {
-            headers: {
-              Authorization:
-                `Bearer ${accessToken}`
+      const [
+        user,
+        guilds
+      ] =
+        await Promise.all([
+          discord(
+            "/users/@me",
+            {
+              headers: {
+                Authorization:
+                  "Bearer " +
+                  token.access_token
+              }
             }
-          }
-        );
+          ),
 
-      const user =
-        await userResponse.json();
-
-      if (!userResponse.ok) {
-        return res
-          .status(401)
-          .send(
-            "Could not retrieve your Discord account."
-          );
-      }
-
-      const guildResponse =
-        await fetch(
-          "https://discord.com/api/v10/users/@me/guilds",
-          {
-            headers: {
-              Authorization:
-                `Bearer ${accessToken}`
+          discord(
+            "/users/@me/guilds",
+            {
+              headers: {
+                Authorization:
+                  "Bearer " +
+                  token.access_token
+              }
             }
-          }
-        );
-
-      const userGuilds =
-        guildResponse.ok
-          ? await guildResponse.json()
-          : [];
-
-      const manageableGuilds =
-        Array.isArray(userGuilds)
-          ? userGuilds.filter(
-              guild =>
-                manageable(guild)
-            )
-          : [];
+          )
+        ]);
 
       req.session.user = {
         id:
           user.id,
 
         username:
-          user.username,
-
-        globalName:
           user.global_name ||
           user.username,
 
         avatar:
-          user.avatar || null,
-
-        guilds:
-          manageableGuilds
+          user.avatar ||
+          null
       };
 
-      req.session.accessToken =
-        accessToken;
+      req.session.guilds =
+        guilds.filter(
+          manageable
+        );
 
-      await new Promise(
-        (resolve, reject) => {
-          req.session.save(
-            error => {
-              if (error) {
-                reject(error);
-              } else {
-                resolve();
-              }
-            }
+      console.log(
+        "OAuth successful for:",
+        req.session.user.username
+      );
+
+      console.log(
+        "Manageable guilds:",
+        req.session.guilds.length
+      );
+
+      req.session.save(
+        error => {
+          if (error) {
+            console.error(
+              "Failed to save OAuth session:",
+              error
+            );
+
+            return res
+              .status(500)
+              .send(
+                "Login succeeded, but the session could not be saved."
+              );
+          }
+
+          console.log(
+            "OAuth session saved successfully."
+          );
+
+          res.redirect(
+            "/dashboard.html"
           );
         }
       );
-
-      console.log(
-        `OAuth successful for: ${user.global_name || user.username}`
-      );
-
-      console.log(
-        `Manageable guilds: ${manageableGuilds.length}`
-      );
-
-      console.log(
-        "OAuth session saved successfully."
-      );
-
-      res.redirect("/");
-    } catch (error) {
+    } catch (
+      error
+    ) {
       console.error(
-        "OAuth callback error:",
+        "Discord OAuth callback error:",
         error
       );
 
       res
         .status(500)
         .send(
-          "Discord login failed."
+          "Discord login failed. Check OAuth variables, database connection, and redirect URI."
         );
     }
   }
@@ -772,9 +681,12 @@ app.get(
    LOGOUT
 ========================= */
 
-app.get(
+app.post(
   "/auth/logout",
-  (req, res) => {
+  (
+    req,
+    res
+  ) => {
     req.session.destroy(
       error => {
         if (error) {
@@ -782,9 +694,22 @@ app.get(
             "Session destroy error:",
             error
           );
+
+          return res
+            .status(500)
+            .json({
+              error:
+                "Logout failed"
+            });
         }
 
-        res.redirect("/");
+        res.clearCookie(
+          "connect.sid"
+        );
+
+        res.json({
+          ok: true
+        });
       }
     );
   }
@@ -796,74 +721,17 @@ app.get(
 
 app.get(
   "/api/public-config",
-  (req, res) => {
+  (
+    _,
+    res
+  ) => {
     res.json({
       clientId:
-        process.env.DISCORD_CLIENT_ID ||
-        null,
-
-      inviteUrl:
-        process.env.DISCORD_CLIENT_ID
-          ? `https://discord.com/oauth2/authorize?client_id=${encodeURIComponent(
-              process.env.DISCORD_CLIENT_ID
-            )}&scope=bot%20applications.commands&permissions=0`
-          : null
-    });
-  }
-);
-
-/* =========================
-   BOT STATUS
-========================= */
-
-app.get(
-  "/api/bot-status",
-  (req, res) => {
-    const guilds =
-      getLiveBotGuilds();
-
-    res.json({
-      online:
-        botReady,
-
-      botOnline:
-        botReady,
-
-      bot: botUser
-        ? {
-            id:
-              botUser.id,
-
-            username:
-              botUser.username,
-
-            tag:
-              botUser.tag
-          }
-        : null,
-
-      serverCount:
-        guilds.length,
-
-      servers:
-        guilds.map(
-          guild => ({
-            id:
-              guild.id,
-
-            name:
-              guild.name,
-
-            icon:
-              guild.iconURL?.({
-                extension: "png",
-                size: 128
-              }) || null
-          })
-        ),
-
-      error:
-        botLoginError
+        process.env
+          .DISCORD_CLIENT_ID ||
+        process.env
+          .DISCORD_OAUTH_CLIENT_ID ||
+        null
     });
   }
 );
@@ -875,179 +743,474 @@ app.get(
 app.get(
   "/api/me",
   auth,
-  async (req, res) => {
-    const user =
-      req.session.user;
-
+  async (
+    req,
+    res
+  ) => {
     const liveGuilds =
-      getLiveBotGuilds();
+      getBotGuilds();
+
+    const botGuildIds =
+      new Set(
+        liveGuilds.map(
+          guild =>
+            guild.id
+        )
+      );
 
     const guilds =
-      (user.guilds || [])
-        .map(guild => ({
+      (
+        req.session.guilds ||
+        []
+      ).map(
+        guild => ({
           ...guild,
 
           botInstalled:
-            botIsInGuild(
+            botGuildIds.has(
               guild.id
             ),
 
           botOnline:
             botReady &&
-            botIsInGuild(
+            botGuildIds.has(
               guild.id
             )
-        }));
+        })
+      );
 
     res.json({
-      user: {
-        id:
-          user.id,
-
-        username:
-          user.username,
-
-        globalName:
-          user.globalName,
-
-        avatar:
-          user.avatar
-      },
-
-      guilds,
+      user:
+        req.session.user,
 
       bot: {
         online:
           botReady,
 
-        serverCount:
-          liveGuilds.length,
+        username:
+          discordClient.user
+            ?.username ||
+          null,
 
-        user:
-          botUser
-            ? {
-                id:
-                  botUser.id,
+        tag:
+          discordClient.user
+            ?.tag ||
+          null,
 
-                username:
-                  botUser.username,
+        id:
+          discordClient.user
+            ?.id ||
+          null,
 
-                tag:
-                  botUser.tag
-              }
-            : null
-      }
+        guildCount:
+          liveGuilds.length
+      },
+
+      guilds
     });
   }
 );
-
 /* =========================
    GUILD META
 ========================= */
 
 app.get(
   "/api/guilds/:guildId/meta",
-  auth,
   guildAuth,
-  async (req, res) => {
+  async (
+    req,
+    res
+  ) => {
     const guildId =
-      String(
-        req.params.guildId
-      );
+      req.guild.id;
 
-    const botInstalled =
+    const installed =
       botIsInGuild(
         guildId
       );
 
-    let botGuild = null;
+    let roles = [];
+    let channels = [];
 
-    if (botInstalled) {
-      botGuild =
+    if (
+      installed &&
+      botReady
+    ) {
+      try {
+        const guild =
+          discordClient.guilds.cache.get(
+            guildId
+          );
+
+        if (guild) {
+          roles =
+            Array.from(
+              guild.roles.cache.values()
+            )
+              .filter(
+                role =>
+                  !role.managed
+              )
+              .map(
+                role => ({
+                  id:
+                    role.id,
+
+                  name:
+                    role.name,
+
+                  position:
+                    role.position,
+
+                  color:
+                    role.hexColor
+                })
+              );
+
+          channels =
+            Array.from(
+              guild.channels.cache.values()
+            )
+              .filter(
+                channel =>
+                  channel.type === 0 ||
+                  channel.type === 2
+              )
+              .map(
+                channel => ({
+                  id:
+                    channel.id,
+
+                  name:
+                    channel.name,
+
+                  type:
+                    channel.type,
+
+                  parentId:
+                    channel.parentId ||
+                    null
+                })
+              );
+        }
+      } catch (
+        error
+      ) {
+        console.error(
+          "Guild metadata error:",
+          error
+        );
+      }
+    }
+
+    res.json({
+      guild:
+        req.guild,
+
+      installed,
+
+      botOnline:
+        botReady,
+
+      roles,
+
+      channels
+    });
+  }
+);
+
+/* =========================
+   BOT STATUS
+========================= */
+
+app.get(
+  "/api/bot/status",
+  auth,
+  (
+    req,
+    res
+  ) => {
+    const guilds =
+      getBotGuilds();
+
+    res.json({
+      online:
+        botReady,
+
+      username:
+        discordClient.user
+          ?.username ||
+        null,
+
+      tag:
+        discordClient.user
+          ?.tag ||
+        null,
+
+      id:
+        discordClient.user
+          ?.id ||
+        null,
+
+      guildCount:
+        guilds.length,
+
+      guilds
+    });
+  }
+);
+
+/* =========================
+   BOT GUILD CHECK
+========================= */
+
+app.get(
+  "/api/guilds/:guildId/bot",
+  guildAuth,
+  (
+    req,
+    res
+  ) => {
+    const guildId =
+      req.guild.id;
+
+    const installed =
+      botIsInGuild(
+        guildId
+      );
+
+    let guild =
+      null;
+
+    if (installed) {
+      guild =
         discordClient.guilds.cache.get(
           guildId
         );
     }
 
     res.json({
-      guild: {
-        id:
-          req.guild.id,
+      online:
+        botReady,
 
-        name:
-          req.guild.name,
+      installed,
 
-        icon:
-          req.guild.icon ||
-          null
-      },
+      guild:
+        guild
+          ? {
+              id:
+                guild.id,
 
-      botInstalled,
+              name:
+                guild.name,
 
-      botOnline:
-        botReady &&
-        botInstalled,
+              icon:
+                guild.iconURL({
+                  extension:
+                    "png",
 
-      bot: botGuild
-        ? {
-            id:
-              botGuild.id,
-
-            name:
-              botGuild.name,
-
-            memberCount:
-              botGuild.memberCount,
-
-            icon:
-              botGuild.iconURL?.({
-                extension: "png",
-                size: 128
-              }) || null
-          }
-        : null
+                  size:
+                    128
+                })
+            }
+          : null
     });
   }
 );
 
 /* =========================
-   SETTINGS
+   INVITE BOT
+========================= */
+
+app.get(
+  "/api/guilds/:guildId/invite",
+  auth,
+  (
+    req,
+    res
+  ) => {
+    const clientId =
+      process.env
+        .DISCORD_CLIENT_ID ||
+      process.env
+        .DISCORD_OAUTH_CLIENT_ID;
+
+    if (!clientId) {
+      return res
+        .status(500)
+        .json({
+          error:
+            "Discord client ID is not configured."
+        });
+    }
+
+    const url =
+      "https://discord.com/oauth2/authorize?" +
+      new URLSearchParams({
+        client_id:
+          clientId,
+
+        guild_id:
+          String(
+            req.params.guildId
+          ),
+
+        scope:
+          "bot applications.commands",
+
+        permissions:
+          "36700160"
+      }).toString();
+
+    res.json({
+      url
+    });
+  }
+);
+
+/* =========================
+   SETTINGS DEFAULTS
+========================= */
+
+const defaults = {
+  volume: 80,
+
+  maxQueue: 100,
+
+  autoplay:
+    false,
+
+  twentyFourSeven:
+    false,
+
+  repeat:
+    "off",
+
+  djRoleId:
+    "",
+
+  musicChannelId:
+    "",
+
+  logChannelId:
+    "",
+
+  embedColor:
+    "#8b5cf6",
+
+  nowPlayingTitle:
+    "Now Playing",
+
+  footerText:
+    "Aether Music",
+
+  language:
+    "en",
+
+  announceNowPlaying:
+    true,
+
+  deleteCommands:
+    false,
+
+  allowExternalLinks:
+    true,
+
+  sourceYouTube:
+    true,
+
+  sourceSoundCloud:
+    true,
+
+  sourceSpotify:
+    true,
+
+  sourceAppleMusic:
+    true,
+
+  sourceDeezer:
+    true,
+
+  sourceBandcamp:
+    true,
+
+  sourceTwitch:
+    true,
+
+  sourceVimeo:
+    true,
+
+  sourceRadio:
+    true,
+
+  sourceDirectUrl:
+    true,
+
+  requesterDisplay:
+    true,
+
+  showQueueButtons:
+    true,
+
+  allowPlaylists:
+    true,
+
+  allowSearch:
+    true,
+
+  defaultSearchSource:
+    "youtube",
+
+  minDjRole:
+    false,
+
+  logCommands:
+    true,
+
+  logPlayer:
+    true,
+
+  logJoins:
+    true,
+
+  enableAnalytics:
+    true
+};
+/* =========================
+   SETTINGS GET
 ========================= */
 
 app.get(
   "/api/guilds/:guildId/settings",
-  auth,
   guildAuth,
-  async (req, res) => {
+  async (
+    req,
+    res
+  ) => {
     try {
       const result =
         await db(
           `
-          SELECT settings
-          FROM bot_settings
+          SELECT config
+          FROM guild_settings
           WHERE guild_id = $1
           `,
           [
-            req.params.guildId
+            req.guild.id
           ]
         );
 
-      const stored =
-        result.rows[0]?.settings ||
-        {};
-
       res.json({
-        guildId:
-          req.params.guildId,
+        ...defaults,
 
-        settings: {
-          ...defaults,
-          ...stored
-        }
+        ...(result.rows[0]?.config ||
+          {})
       });
-    } catch (error) {
+    } catch (
+      error
+    ) {
       console.error(
-        "Settings GET error:",
+        "Settings load error:",
         error
       );
 
@@ -1055,97 +1218,90 @@ app.get(
         .status(500)
         .json({
           error:
-            "Failed to load settings."
+            "Could not load settings."
         });
     }
   }
 );
 
+/* =========================
+   SETTINGS UPDATE
+========================= */
+
 app.put(
   "/api/guilds/:guildId/settings",
-  auth,
   guildAuth,
-  async (req, res) => {
+  async (
+    req,
+    res
+  ) => {
     try {
-      const incoming =
-        req.body &&
-        typeof req.body === "object"
-          ? req.body
-          : {};
+      const config =
+        {};
 
-      const settings = {
-        ...defaults,
-        ...incoming
-      };
+      for (
+        const key of Object.keys(
+          defaults
+        )
+      ) {
+        if (
+          req.body[key] !==
+          undefined
+        ) {
+          config[key] =
+            req.body[key];
+        }
+      }
 
       await db(
         `
-        INSERT INTO bot_settings
-          (
-            guild_id,
-            settings,
-            updated_at
-          )
-        VALUES
-          (
-            $1,
-            $2::jsonb,
-            NOW()
-          )
-        ON CONFLICT (guild_id)
+        INSERT INTO guild_settings
+        (guild_id, guild_name, config)
+        VALUES ($1, $2, $3)
+        ON CONFLICT(guild_id)
         DO UPDATE SET
-          settings = EXCLUDED.settings,
-          updated_at = NOW()
+          guild_name =
+            EXCLUDED.guild_name,
+          config =
+            EXCLUDED.config,
+          updated_at =
+            NOW()
         `,
         [
-          req.params.guildId,
-          JSON.stringify(
-            settings
-          )
+          req.guild.id,
+          req.guild.name,
+          config
         ]
       );
 
       await db(
         `
-        INSERT INTO audit_logs
-          (
-            guild_id,
-            user_id,
-            action,
-            metadata
-          )
-        VALUES
-          (
-            $1,
-            $2,
-            $3,
-            $4::jsonb
-          )
+        INSERT INTO audit_log
+        (guild_id, user_id, action, payload)
+        VALUES ($1, $2, $3, $4)
         `,
         [
-          req.params.guildId,
-
+          req.guild.id,
           req.session.user.id,
-
-          "settings_updated",
-
-          JSON.stringify({
-            keys:
-              Object.keys(
-                incoming
-              )
-          })
+          "settings.update",
+          config
         ]
       );
 
       res.json({
-        ok: true,
+        ok:
+          true,
 
-        settings
+        settings: {
+          ...defaults,
+          ...config
+        }
       });
-    } catch (error) {
+    } catch (
+      error
+    ) {
       console.error(
-        "Settings PUT error:",
+        "Settings update error:",
         error
       );
 
@@ -1153,7 +1309,7 @@ app.put(
         .status(500)
         .json({
           error:
-            "Failed to save settings."
+            "Could not save settings."
         });
     }
   }
@@ -1165,55 +1321,61 @@ app.put(
 
 app.get(
   "/api/guilds/:guildId/player",
-  auth,
   guildAuth,
-  async (req, res) => {
-    const guildId =
-      String(
-        req.params.guildId
+  async (
+    req,
+    res
+  ) => {
+    try {
+      const result =
+        await db(
+          `
+          SELECT state
+          FROM player_state
+          WHERE guild_id = $1
+          `,
+          [
+            req.guild.id
+          ]
+        );
+
+      res.json(
+        result.rows[0]?.state ||
+          {
+            connected:
+              false,
+
+            playing:
+              false,
+
+            track:
+              null,
+
+            queue:
+              [],
+
+            volume:
+              80,
+
+            repeat:
+              "off"
+          }
+      );
+    } catch (
+      error
+    ) {
+      console.error(
+        "Player state error:",
+        error
       );
 
-    const botInstalled =
-      botIsInGuild(
-        guildId
-      );
-
-    res.json({
-      guildId,
-
-      botInstalled,
-
-      botOnline:
-        botReady &&
-        botInstalled,
-
-      connected:
-        false,
-
-      playing:
-        false,
-
-      paused:
-        false,
-
-      volume:
-        80,
-
-      loop:
-        "off",
-
-      position:
-        0,
-
-      duration:
-        0,
-
-      current:
-        null,
-
-      queue:
-        []
-    });
+      res
+        .status(500)
+        .json({
+          error:
+            "Could not load player state."
+        });
+    }
   }
 );
 
@@ -1222,112 +1384,95 @@ app.get(
 ========================= */
 
 app.post(
-  "/api/guilds/:guildId/player",
-  auth,
+  "/api/guilds/:guildId/player/:command",
   guildAuth,
-  async (req, res) => {
-    const guildId =
-      String(
-        req.params.guildId
-      );
-
-    const botInstalled =
-      botIsInGuild(
-        guildId
-      );
-
-    if (!botReady) {
-      return res
-        .status(503)
-        .json({
-          error:
-            "The Aether bot is currently offline."
-        });
-    }
-
-    if (!botInstalled) {
-      return res
-        .status(409)
-        .json({
-          error:
-            "Aether is not installed in this server."
-        });
-    }
+  async (
+    req,
+    res
+  ) => {
+    const allowed = [
+      "join",
+      "play",
+      "pause",
+      "resume",
+      "skip",
+      "stop",
+      "shuffle",
+      "previous",
+      "disconnect",
+      "volume",
+      "repeat",
+      "clear"
+    ];
 
     const command =
-      String(
-        req.body?.command ||
-        ""
-      ).trim();
+      req.params.command;
 
-    if (!command) {
+    if (
+      !allowed.includes(
+        command
+      )
+    ) {
       return res
         .status(400)
         .json({
           error:
-            "Command is required."
+            "Unknown player command"
         });
     }
 
-    const payload =
-      req.body?.payload &&
-      typeof req.body.payload ===
-        "object"
-        ? req.body.payload
-        : {};
-
     try {
-      const result =
-        await db(
-          `
-          INSERT INTO bot_commands
-            (
-              guild_id,
-              user_id,
-              command,
-              payload,
-              status
-            )
-          VALUES
-            (
-              $1,
-              $2,
-              $3,
-              $4::jsonb,
-              'queued'
-            )
-          RETURNING
-            id,
-            guild_id,
-            user_id,
+      const payload =
+        req.body || {};
+
+      await db(
+        `
+        INSERT INTO bot_commands
+        (guild_id, command, payload)
+        VALUES ($1, $2, $3)
+        `,
+        [
+          req.guild.id,
+          command,
+          payload
+        ]
+      );
+
+      await db(
+        `
+        INSERT INTO audit_log
+        (guild_id, user_id, action, payload)
+        VALUES ($1, $2, $3, $4)
+        `,
+        [
+          req.guild.id,
+          req.session.user.id,
+          "player." +
             command,
-            payload,
-            status,
-            created_at
-          `,
-          [
-            guildId,
-
-            req.session.user.id,
-
-            command,
-
-            JSON.stringify(
-              payload
-            )
-          ]
-        );
-
-      const commandRow =
-        result.rows[0];
+          payload
+        ]
+      );
 
       res.json({
-        ok: true,
+        ok:
+          true,
 
-        command:
-          commandRow
+        queued:
+          true,
+
+        command,
+
+        botOnline:
+          botReady,
+
+        botInstalled:
+          botIsInGuild(
+            req.guild.id
+          )
       });
-    } catch (error) {
+    } catch (
+      error
+    ) {
       console.error(
         "Player command error:",
         error
@@ -1337,211 +1482,51 @@ app.post(
         .status(500)
         .json({
           error:
-            "Failed to queue player command."
+            "Could not queue player command."
         });
     }
   }
 );
 
-/* =========================
-   ANALYTICS
-========================= */
-
-app.get(
-  "/api/guilds/:guildId/analytics",
-  auth,
-  guildAuth,
-  async (req, res) => {
-    try {
-      const result =
-        await db(
-          `
-          SELECT
-            event,
-            COUNT(*)::int AS count
-          FROM analytics_events
-          WHERE guild_id = $1
-          GROUP BY event
-          ORDER BY count DESC
-          `,
-          [
-            req.params.guildId
-          ]
-        );
-
-      res.json({
-        guildId:
-          req.params.guildId,
-
-        events:
-          result.rows
-      });
-    } catch (error) {
-      console.error(
-        "Analytics error:",
-        error
-      );
-
-      res
-        .status(500)
-        .json({
-          error:
-            "Failed to load analytics."
-        });
-    }
-  }
-);
 
 /* =========================
-   AUDIT LOG
-========================= */
-
-app.get(
-  "/api/guilds/:guildId/audit",
-  auth,
-  guildAuth,
-  async (req, res) => {
-    try {
-      const result =
-        await db(
-          `
-          SELECT
-            id,
-            guild_id,
-            user_id,
-            action,
-            metadata,
-            created_at
-          FROM audit_logs
-          WHERE guild_id = $1
-          ORDER BY created_at DESC
-          LIMIT 100
-          `,
-          [
-            req.params.guildId
-          ]
-        );
-
-      res.json({
-        guildId:
-          req.params.guildId,
-
-        logs:
-          result.rows
-      });
-    } catch (error) {
-      console.error(
-        "Audit log error:",
-        error
-      );
-
-      res
-        .status(500)
-        .json({
-          error:
-            "Failed to load audit logs."
-        });
-    }
-  }
-);
-
-/* =========================
-   STATIC FILES
-========================= */
-
-app.use(
-  express.static(
-    path.join(
-      __dirname,
-      "public"
-    )
-  )
-);
-
-/* =========================
-   ROOT
-========================= */
-
-app.get(
-  "/",
-  (req, res) => {
-    res.sendFile(
-      path.join(
-        __dirname,
-        "public",
-        "index.html"
-      )
-    );
-  }
-);
-
-/* =========================
-   ERROR HANDLER
-========================= */
-
-app.use(
-  (
-    error,
-    req,
-    res,
-    next
-  ) => {
-    console.error(
-      "Unhandled server error:",
-      error
-    );
-
-    if (res.headersSent) {
-      return next(error);
-    }
-
-    res
-      .status(500)
-      .json({
-        error:
-          "Internal server error."
-      });
-  }
-);
-
-/* =========================
-   START SERVER
+   START AETHER
 ========================= */
 
 async function start() {
-  await initializeDatabase();
+  try {
+    await initializeDatabase();
 
-  app.listen(
-    PORT,
-    "0.0.0.0",
-    () => {
-      console.log(
-        "================================"
-      );
+    app.listen(
+      PORT,
+      "0.0.0.0",
+      () => {
+        console.log(
+          "================================="
+        );
 
-      console.log(
-        "AETHER DASHBOARD ONLINE"
-      );
+        console.log(
+          "AETHER DASHBOARD ONLINE"
+        );
 
-      console.log(
-        `Port: ${PORT}`
-      );
+        console.log(
+          `Port: ${PORT}`
+        );
 
-      console.log(
-        `Production: ${isProduction}`
-      );
+        console.log(
+          `Environment: ${
+            isProduction
+              ? "production"
+              : "development"
+          }`
+        );
 
-      console.log(
-        "================================"
-      );
-    }
-  );
-
-  await startDiscordBot();
-}
-
-start().catch(
-  error => {
+        console.log(
+          "================================="
+        );
+      }
+    );
+  } catch (error) {
     console.error(
       "Aether startup failed:",
       error
@@ -1549,4 +1534,6 @@ start().catch(
 
     process.exit(1);
   }
-);
+}
+
+start();
