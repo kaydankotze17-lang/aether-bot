@@ -10,11 +10,15 @@
     "start": "node server.js"
   },
   "dependencies": {
+    "@discordjs/voice": "^0.19.2",
+    "@snazzah/davey": "^0.1.12",
     "connect-pg-simple": "^10.0.0",
     "discord.js": "^14.27.0",
     "dotenv": "^17.4.2",
     "express": "^5.1.0",
     "express-session": "^1.18.2",
-    "pg": "^8.16.3"
+    "opusscript": "^0.0.8",
+    "pg": "^8.16.3",
+    "play-dl": "^1.9.7"
   }
 }
