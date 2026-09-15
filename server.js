@@ -11,6 +11,8 @@ import {
   GatewayIntentBits,
   Partials
 } from "discord.js";
+import { AetherMusicManager } from "./bot/music.js";
+import { createAetherDashboardBridge } from "./bot-bridge/bridge.js";
 
 const __dirname =
   path.dirname(fileURLToPath(import.meta.url));
@@ -40,6 +42,7 @@ const discordClient =
     ]
   });
 
+const musicManager = new AetherMusicManager(discordClient);
 let botReady = false;
 
 discordClient.once(
@@ -344,6 +347,8 @@ function getBotGuilds() {
       : null
   }));
 }
+let dashboardBridge = null;
+
 
 function botIsInGuild(
   guildId
@@ -1327,6 +1332,13 @@ app.get(
     res
   ) => {
     try {
+      const liveState =
+        musicManager.getState(req.guild.id);
+
+      if (liveState) {
+        return res.json(liveState);
+      }
+
       const result =
         await db(
           `
@@ -1339,7 +1351,7 @@ app.get(
           ]
         );
 
-      res.json(
+      return res.json(
         result.rows[0]?.state ||
           {
             connected:
@@ -1348,7 +1360,7 @@ app.get(
             playing:
               false,
 
-            track:
+            current:
               null,
 
             queue:
@@ -1496,6 +1508,38 @@ app.post(
 async function start() {
   try {
     await initializeDatabase();
+
+    if (pool) {
+      dashboardBridge = createAetherDashboardBridge({
+        databaseUrl: process.env.DATABASE_URL,
+        onCommand: async ({ guildId, command, payload }) => {
+          const result = await musicManager.handleCommand({
+            guildId,
+            command,
+            payload
+          });
+
+          const liveState = musicManager.getState(guildId);
+
+          if (liveState) {
+            await db(
+              `
+              INSERT INTO player_state
+                (guild_id, state)
+              VALUES ($1, $2)
+              ON CONFLICT (guild_id)
+              DO UPDATE SET
+                state = EXCLUDED.state,
+                updated_at = NOW()
+              `,
+              [guildId, liveState]
+            );
+          }
+
+          return result;
+        }
+      });
+    }
 
     app.listen(
       PORT,

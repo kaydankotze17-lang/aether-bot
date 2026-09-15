@@ -335,7 +335,7 @@ async function player() {
       `${queue.length} track${queue.length === 1 ? "" : "s"} queued`;
 
     $("track").textContent =
-      data.track?.title || "Nothing playing";
+      data.current?.title || data.track?.title || "Nothing playing";
 
     if (!queue.length) {
       $("playerQueue").innerHTML = `
@@ -417,13 +417,14 @@ async function runCommand(command, button) {
 
   try {
     const payload = {};
+    if (command === "join" || command === "play") payload.voiceChannelId = $("voiceChannel")?.value || null;
 
     if (command === "volume") {
-      payload.value = Number($("volume").value);
+      payload.volume = Number($("volume").value);
     }
 
     if (command === "repeat") {
-      payload.value = $("repeat").value;
+      payload.mode = $("repeat").value;
     }
 
     await api(
